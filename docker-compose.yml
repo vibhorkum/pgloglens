@@ -1,0 +1,68 @@
+# Docker Compose for pgloglens integration testing
+# Starts PostgreSQL with comprehensive logging enabled
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: pgloglens-test-pg
+    environment:
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: testdb
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./tests/docker/pg-init:/docker-entrypoint-initdb.d
+      - pg_logs:/var/log/postgresql
+    command:
+      - postgres
+      - -c
+      - log_destination=stderr
+      - -c
+      - logging_collector=on
+      - -c
+      - log_directory=/var/log/postgresql
+      - -c
+      - log_filename=postgresql.log
+      - -c
+      - log_file_mode=0644
+      - -c
+      - log_rotation_age=0
+      - -c
+      - log_rotation_size=0
+      - -c
+      - log_min_duration_statement=0
+      - -c
+      - log_checkpoints=on
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+      - -c
+      - log_lock_waits=on
+      - -c
+      - log_temp_files=0
+      - -c
+      - log_autovacuum_min_duration=0
+      - -c
+      - log_line_prefix=%t [%p] %u@%d
+      - -c
+      - deadlock_timeout=1s
+      - -c
+      - lock_timeout=5s
+      - -c
+      - statement_timeout=30s
+      - -c
+      - checkpoint_timeout=30s
+      - -c
+      - max_wal_size=64MB
+      - -c
+      - work_mem=4MB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d testdb"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pg_logs:

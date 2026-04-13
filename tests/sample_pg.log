@@ -1,0 +1,130 @@
+2024-01-15 08:00:01.234 UTC [12345] LOG:  database system was shut down at 2024-01-15 07:59:58 UTC
+2024-01-15 08:00:02.100 UTC [12345] LOG:  entering standby mode
+2024-01-15 08:00:03.450 UTC [12346] app@myapp LOG:  connection received: host=10.0.1.50 port=54321
+2024-01-15 08:00:03.451 UTC [12346] app@myapp LOG:  connection authorized: user=app database=myapp application_name=rails
+2024-01-15 08:00:04.100 UTC [12347] app@myapp LOG:  connection received: host=10.0.1.51 port=54322
+2024-01-15 08:00:04.101 UTC [12347] app@myapp LOG:  connection authorized: user=app database=myapp application_name=rails
+2024-01-15 08:00:05.000 UTC [12348] analytics@reporting LOG:  connection received: host=10.0.1.60 port=11111
+2024-01-15 08:00:05.001 UTC [12348] analytics@reporting LOG:  connection authorized: user=analytics database=reporting application_name=metabase
+2024-01-15 08:00:10.500 UTC [12346] app@myapp LOG:  duration: 5.234 ms  statement: SELECT id, name, email FROM users WHERE id = 1234
+2024-01-15 08:00:11.000 UTC [12346] app@myapp LOG:  duration: 8.100 ms  statement: SELECT * FROM products WHERE category_id = 5 AND active = true ORDER BY name LIMIT 20
+2024-01-15 08:00:12.500 UTC [12347] app@myapp LOG:  duration: 1234.567 ms  statement: SELECT u.id, u.name, COUNT(o.id) as order_count, SUM(o.total) as total_spent FROM users u LEFT JOIN orders o ON o.user_id = u.id WHERE u.created_at > '2023-01-01' GROUP BY u.id, u.name ORDER BY total_spent DESC LIMIT 100
+2024-01-15 08:00:13.000 UTC [12348] analytics@reporting LOG:  duration: 45230.123 ms  statement: SELECT date_trunc('month', created_at) as month, product_id, SUM(quantity) as total_qty, SUM(revenue) as total_revenue FROM sales_fact WHERE created_at BETWEEN '2023-01-01' AND '2024-01-01' GROUP BY 1, 2 ORDER BY 1, 3 DESC
+2024-01-15 08:00:15.000 UTC [12349] app@myapp LOG:  connection received: host=10.0.1.52 port=54323
+2024-01-15 08:00:15.001 UTC [12349] app@myapp LOG:  connection authorized: user=app database=myapp application_name=sidekiq
+2024-01-15 08:00:16.000 UTC [12346] app@myapp LOG:  duration: 2100.000 ms  statement: SELECT * FROM inventory_items WHERE warehouse_id = 3 AND quantity < reorder_point AND is_active = true
+2024-01-15 08:00:17.000 UTC [12347] app@myapp LOG:  duration: 3450.789 ms  statement: UPDATE orders SET status = 'shipped', shipped_at = NOW(), tracking_number = 'TRK123456789' WHERE id IN (SELECT id FROM orders WHERE status = 'pending' AND created_at < NOW() - INTERVAL '2 days' LIMIT 1000)
+2024-01-15 08:00:18.000 UTC [12346] app@myapp ERROR:  duplicate key value violates unique constraint "users_email_key" (23505)
+	DETAIL:  Key (email)=(test@example.com) already exists.
+2024-01-15 08:00:18.100 UTC [12346] app@myapp STATEMENT:  INSERT INTO users (email, name, created_at) VALUES ('test@example.com', 'Test User', NOW())
+2024-01-15 08:00:19.000 UTC [12350] baduser@myapp FATAL:  password authentication failed for user "baduser"
+2024-01-15 08:00:19.500 UTC [12351] hacker@myapp FATAL:  password authentication failed for user "hacker"
+2024-01-15 08:00:20.000 UTC [12352] root@postgres FATAL:  password authentication failed for user "root"
+2024-01-15 08:00:20.500 UTC [12353] admin@myapp FATAL:  password authentication failed for user "admin"
+2024-01-15 08:00:21.000 UTC [12354] postgres@myapp FATAL:  password authentication failed for user "postgres"
+2024-01-15 08:00:25.000 UTC [12347] app@myapp LOG:  process 12355 still waiting for ShareLock on transaction 7891234; blocking processes: 12346
+	DETAIL:  Process holding the lock: 12346. Wait queue: 12355.
+2024-01-15 08:00:27.000 UTC [12347] app@myapp LOG:  duration: 2005.432 ms  statement: SELECT pg_advisory_lock(12345)
+2024-01-15 08:00:28.000 UTC [12348] analytics@reporting LOG:  duration: 15678.000 ms  statement: SELECT date_trunc('month', created_at) as month, product_id, SUM(quantity) as total_qty, SUM(revenue) as total_revenue FROM sales_fact WHERE created_at BETWEEN '2023-01-01' AND '2024-01-01' GROUP BY 1, 2 ORDER BY 1, 3 DESC
+2024-01-15 08:00:30.000 UTC [12356] app@myapp LOG:  connection received: host=10.0.1.53 port=54324
+2024-01-15 08:00:30.001 UTC [12356] app@myapp LOG:  connection authorized: user=app database=myapp application_name=rails
+2024-01-15 08:00:31.000 UTC [12356] app@myapp LOG:  temporary file: path "base/pgsql_tmp/pgsql_tmp12356.0", size 157286400
+2024-01-15 08:00:31.100 UTC [12356] app@myapp LOG:  duration: 8930.111 ms  statement: SELECT c.id, c.name, c.email, COUNT(DISTINCT o.id) as orders, COUNT(DISTINCT p.id) as products FROM customers c JOIN orders o ON o.customer_id = c.id JOIN order_items oi ON oi.order_id = o.id JOIN products p ON p.id = oi.product_id WHERE c.created_at > '2022-01-01' GROUP BY c.id, c.name, c.email HAVING COUNT(DISTINCT o.id) > 5 ORDER BY orders DESC
+2024-01-15 08:00:32.000 UTC [12346] app@myapp ERROR:  duplicate key value violates unique constraint "users_email_key" (23505)
+	DETAIL:  Key (email)=(another@example.com) already exists.
+2024-01-15 08:00:33.000 UTC [12348] analytics@reporting LOG:  checkpoint starting: wal
+2024-01-15 08:00:36.000 UTC [12348] analytics@reporting LOG:  checkpoint complete: wrote 1234 buffers (7.5%); 0 WAL file(s) added, 2 removed, 5 recycled; write=2.500 s, sync=0.300 s, total=3.100 s; distance=15360 kB, estimate=15872 kB
+2024-01-15 08:00:37.000 UTC [12357] app@myapp LOG:  connection received: host=10.0.1.54 port=54325
+2024-01-15 08:00:37.001 UTC [12357] app@myapp LOG:  connection authorized: user=app database=myapp application_name=delayed_job
+2024-01-15 08:00:38.000 UTC [12346] app@myapp LOG:  duration: 1567.890 ms  statement: SELECT id, name, email FROM users WHERE id = 5678
+2024-01-15 08:00:39.000 UTC [12357] app@myapp LOG:  duration: 4321.000 ms  statement: UPDATE orders SET status = 'shipped', shipped_at = NOW(), tracking_number = 'TRK987654321' WHERE id IN (SELECT id FROM orders WHERE status = 'pending' AND created_at < NOW() - INTERVAL '2 days' LIMIT 1000)
+2024-01-15 08:00:40.000 UTC [12358] autovacuum LOG:  automatic vacuum of table "myapp.public.orders": index scans: 1, pages: 250 removed, 8750 remain, 0 skipped due to pins, 0 skipped frozen; tuples: 15234.00 removed, 1234567.00 remain, 0 are dead but not yet removable, oldest xmin: 7890123; I/O timings: read: 0.000 ms, write: 0.000 ms; elapsed time: 45.320 s
+2024-01-15 08:00:41.000 UTC [12346] app@myapp ERROR:  could not serialize access due to concurrent update (40001)
+2024-01-15 08:00:41.500 UTC [12347] app@myapp ERROR:  could not serialize access due to concurrent update (40001)
+2024-01-15 08:00:42.000 UTC [12346] app@myapp LOG:  duration: 1200.000 ms  statement: SELECT * FROM inventory_items WHERE warehouse_id = 7 AND quantity < reorder_point AND is_active = true
+2024-01-15 08:00:43.000 UTC [12356] app@myapp LOG:  temporary file: path "base/pgsql_tmp/pgsql_tmp12356.1", size 524288000
+2024-01-15 08:00:44.000 UTC [12356] app@myapp LOG:  duration: 22150.000 ms  statement: SELECT c.id, c.name, c.email, COUNT(DISTINCT o.id) as orders, COUNT(DISTINCT p.id) as products FROM customers c JOIN orders o ON o.customer_id = c.id JOIN order_items oi ON oi.order_id = o.id JOIN products p ON p.id = oi.product_id WHERE c.created_at > '2021-01-01' GROUP BY c.id, c.name, c.email HAVING COUNT(DISTINCT o.id) > 3 ORDER BY orders DESC
+2024-01-15 08:00:45.000 UTC [12355] app@myapp LOG:  deadlock detected
+	DETAIL:  Process 12355 waits for ShareLock on transaction 7891234; blocked by process 12346.
+	Process 12346 waits for ShareLock on transaction 7891235; blocked by process 12355.
+	HINT:  See server log for query details.
+2024-01-15 08:00:46.000 UTC [12358] autovacuum LOG:  automatic vacuum of table "myapp.public.users": index scans: 0, pages: 10 removed, 1250 remain, 0 skipped due to pins, 0 skipped frozen; tuples: 567.00 removed, 98765.00 remain, 0 are dead but not yet removable, oldest xmin: 7890124; I/O timings: read: 0.000 ms, write: 0.000 ms; elapsed time: 3.210 s
+2024-01-15 08:00:47.000 UTC [12359] app@myapp LOG:  duration: 1800.000 ms  statement: SELECT * FROM inventory_items WHERE warehouse_id = 2 AND quantity < reorder_point AND is_active = true
+2024-01-15 08:00:48.000 UTC [12360] badclient@FATAL:  no pg_hba.conf entry for host "192.168.100.50", user "badclient", database "myapp", SSL off
+2024-01-15 08:00:49.000 UTC [12346] app@myapp LOG:  duration: 1100.000 ms  statement: SELECT * FROM inventory_items WHERE warehouse_id = 1 AND quantity < reorder_point AND is_active = true
+2024-01-15 08:00:50.000 UTC [12361] app@myapp LOG:  checkpoint starting: immediate
+2024-01-15 08:00:52.000 UTC [12361] app@myapp LOG:  checkpoint complete: wrote 567 buffers (3.4%); 0 WAL file(s) added, 1 removed, 2 recycled; write=1.200 s, sync=0.100 s, total=2.050 s; distance=7168 kB, estimate=8192 kB
+2024-01-15 08:01:00.000 UTC [12348] analytics@reporting LOG:  duration: 38920.000 ms  statement: SELECT date_trunc('month', created_at) as month, product_id, SUM(quantity) as total_qty, SUM(revenue) as total_revenue FROM sales_fact WHERE created_at BETWEEN '2023-01-01' AND '2024-01-01' GROUP BY 1, 2 ORDER BY 1, 3 DESC
+2024-01-15 08:01:01.000 UTC [12362] app@myapp ERROR:  duplicate key value violates unique constraint "users_email_key" (23505)
+	DETAIL:  Key (email)=(third@example.com) already exists.
+2024-01-15 08:01:02.000 UTC [12363] app@myapp ERROR:  relation "nonexistent_table" does not exist (42P01)
+	STATEMENT:  SELECT * FROM nonexistent_table WHERE id = 1
+2024-01-15 08:01:03.000 UTC [12346] app@myapp LOG:  duration: 1350.000 ms  statement: SELECT id, name, email FROM users WHERE id = 9012
+2024-01-15 08:01:05.000 UTC [12364] autovacuum LOG:  automatic vacuum of table "myapp.public.orders": index scans: 1, pages: 180 removed, 8920 remain, 0 skipped due to pins, 0 skipped frozen; tuples: 12000.00 removed, 1240000.00 remain, 0 are dead but not yet removable, oldest xmin: 7890200; I/O timings: read: 0.000 ms, write: 0.000 ms; elapsed time: 38.750 s
+2024-01-15 08:01:06.000 UTC [12347] app@myapp LOG:  duration: 5670.000 ms  statement: SELECT u.id, u.name, COUNT(o.id) as order_count, SUM(o.total) as total_spent FROM users u LEFT JOIN orders o ON o.user_id = u.id WHERE u.created_at > '2022-06-01' GROUP BY u.id, u.name ORDER BY total_spent DESC LIMIT 100
+2024-01-15 08:01:07.000 UTC [12365] app@myapp LOG:  process 12365 still waiting for RowExclusiveLock on relation 12345 of database 16384; blocking processes: 12346, 12347
+	DETAIL:  Processes holding the lock: 12346 12347. Wait queue: 12365.
+2024-01-15 08:01:08.000 UTC [12366] replication LOG:  replication slot "standby_slot" has no consumer active. It will be stalled with lag = 52428800 bytes.
+2024-01-15 08:01:10.000 UTC [12349] app@myapp LOG:  duration: 2890.000 ms  statement: SELECT pg_advisory_lock(12345)
+2024-01-15 08:01:11.000 UTC [12356] app@myapp LOG:  temporary file: path "base/pgsql_tmp/pgsql_tmp12356.2", size 209715200
+2024-01-15 08:01:12.000 UTC [12356] app@myapp LOG:  duration: 18430.000 ms  statement: SELECT c.id, c.name, c.email, COUNT(DISTINCT o.id) as orders, COUNT(DISTINCT p.id) as products FROM customers c JOIN orders o ON o.customer_id = c.id JOIN order_items oi ON oi.order_id = o.id JOIN products p ON p.id = oi.product_id WHERE c.created_at > '2020-01-01' GROUP BY c.id, c.name, c.email HAVING COUNT(DISTINCT o.id) > 2 ORDER BY orders DESC
+2024-01-15 08:01:13.000 UTC [12367] FATAL:  the database system is in recovery mode
+2024-01-15 08:01:15.000 UTC [12368] app@myapp ERROR:  out of memory
+	DETAIL:  Failed on request of size 268435456.
+2024-01-15 08:01:16.000 UTC [12346] app@myapp LOG:  duration: 1420.000 ms  statement: SELECT id, name, email FROM users WHERE id = 3456
+2024-01-15 08:01:17.000 UTC [12369] autovacuum LOG:  automatic analyze of table "myapp.public.products": elapsed time: 12.340 s
+2024-01-15 08:01:18.000 UTC [12370] app@myapp LOG:  checkpoint starting: wal
+2024-01-15 08:01:20.000 UTC [12370] app@myapp LOG:  checkpoint complete: wrote 890 buffers (5.4%); 0 WAL file(s) added, 0 removed, 3 recycled; write=1.800 s, sync=0.200 s, total=2.300 s; distance=11264 kB, estimate=12288 kB
+2024-01-15 08:01:21.000 UTC [12371] baduser2@myapp FATAL:  password authentication failed for user "baduser2"
+2024-01-15 08:01:22.000 UTC [12372] tempuser@myapp FATAL:  Ident authentication failed for user "tempuser"
+2024-01-15 08:01:23.000 UTC [12346] app@myapp LOG:  duration: 1678.000 ms  statement: SELECT * FROM inventory_items WHERE warehouse_id = 5 AND quantity < reorder_point AND is_active = true
+2024-01-15 08:01:24.000 UTC [12347] app@myapp ERROR:  duplicate key value violates unique constraint "orders_reference_key" (23505)
+	DETAIL:  Key (reference)=(ORD-2024-001234) already exists.
+2024-01-15 08:01:25.000 UTC [12346] app@myapp LOG:  duration: 1234.000 ms  statement: SELECT id, name, email FROM users WHERE id = 7890
+2024-01-15 08:01:26.000 UTC [12373] app@myapp LOG:  duration: 8100.000 ms  statement: SELECT u.id, u.name, COUNT(o.id) as order_count, SUM(o.total) as total_spent FROM users u LEFT JOIN orders o ON o.user_id = u.id WHERE u.created_at > '2023-06-01' GROUP BY u.id, u.name ORDER BY total_spent DESC LIMIT 100
+2024-01-15 08:01:27.000 UTC [12374] app@myapp LOG:  duration: 1500.000 ms  statement: SELECT id, name, email FROM users WHERE id = 2345
+2024-01-15 08:01:28.000 UTC [12375] autovacuum LOG:  automatic vacuum of table "myapp.public.order_items": index scans: 2, pages: 500 removed, 25000 remain, 0 skipped due to pins, 0 skipped frozen; tuples: 45000.00 removed, 5000000.00 remain, 0 are dead but not yet removable, oldest xmin: 7890300; I/O timings: read: 0.000 ms, write: 0.000 ms; elapsed time: 125.670 s
+2024-01-15 08:01:30.000 UTC [12346] app@myapp LOG:  duration: 3200.000 ms  statement: SELECT * FROM inventory_items WHERE warehouse_id = 4 AND quantity < reorder_point AND is_active = true
+2024-01-15 08:01:31.000 UTC [12376] app@myapp LOG:  checkpoint occurring too frequently (1 seconds after last)
+2024-01-15 08:01:32.000 UTC [12377] app@myapp LOG:  checkpoint starting: wal
+2024-01-15 08:01:34.000 UTC [12377] app@myapp LOG:  checkpoint complete: wrote 2100 buffers (12.8%); 1 WAL file(s) added, 0 removed, 4 recycled; write=1.500 s, sync=0.300 s, total=2.100 s; distance=26624 kB, estimate=27136 kB
+2024-01-15 08:01:35.000 UTC [12346] app@myapp LOG:  duration: 1890.000 ms  statement: SELECT id, name, email FROM users WHERE id = 6789
+2024-01-15 08:01:36.000 UTC [12378] replication LOG:  replication slot "replica2_slot" lag = 104857600 bytes
+2024-01-15 08:01:37.000 UTC [12379] app@myapp LOG:  duration: 4500.000 ms  statement: SELECT u.id, u.name, COUNT(o.id) as order_count, SUM(o.total) as total_spent FROM users u LEFT JOIN orders o ON o.user_id = u.id WHERE u.created_at > '2023-09-01' GROUP BY u.id, u.name ORDER BY total_spent DESC LIMIT 100
+2024-01-15 08:01:38.000 UTC [12380] autovacuum LOG:  automatic vacuum of table "myapp.public.events": index scans: 0, pages: 100 removed, 50000 remain, 0 skipped due to pins, 0 skipped frozen; tuples: 8900.00 removed, 10000000.00 remain, 0 are dead but not yet removable, oldest xmin: 7890400; I/O timings: read: 0.000 ms, write: 0.000 ms; elapsed time: 22.450 s
+2024-01-15 08:01:39.000 UTC [12346] app@myapp ERROR:  could not serialize access due to concurrent update (40001)
+2024-01-15 08:01:40.000 UTC [12381] app@myapp LOG:  connection received: host=10.0.1.55 port=54330
+2024-01-15 08:01:40.001 UTC [12381] app@myapp LOG:  connection authorized: user=app database=myapp application_name=celery
+2024-01-15 08:01:41.000 UTC [12346] app@myapp LOG:  duration: 1120.000 ms  statement: SELECT id, name, email FROM users WHERE id = 1111
+2024-01-15 08:01:42.000 UTC [12382] app@myapp LOG:  duration: 6780.000 ms  statement: UPDATE orders SET status = 'shipped', shipped_at = NOW(), tracking_number = 'TRK555666777' WHERE id IN (SELECT id FROM orders WHERE status = 'pending' AND created_at < NOW() - INTERVAL '3 days' LIMIT 500)
+2024-01-15 08:01:43.000 UTC [12383] app@myapp LOG:  checkpoint occurring too frequently (2 seconds after last)
+2024-01-15 08:01:44.000 UTC [12384] app@myapp LOG:  temporary file: path "base/pgsql_tmp/pgsql_tmp12384.0", size 1073741824
+2024-01-15 08:01:44.100 UTC [12384] app@myapp LOG:  duration: 35000.000 ms  statement: SELECT * FROM audit_log WHERE created_at > '2020-01-01' ORDER BY created_at DESC
+2024-01-15 08:01:45.000 UTC [12385] app@myapp LOG:  duration: 1300.000 ms  statement: SELECT id, name, email FROM users WHERE id = 2222
+2024-01-15 08:01:46.000 UTC [12386] app@myapp ERROR:  SSL connection has been closed unexpectedly
+2024-01-15 08:01:47.000 UTC [12346] app@myapp LOG:  duration: 1450.000 ms  statement: SELECT id, name, email FROM users WHERE id = 3333
+2024-01-15 08:01:48.000 UTC [12358] autovacuum LOG:  automatic vacuum of table "myapp.public.orders": index scans: 1, pages: 200 removed, 8950 remain, 0 skipped due to pins, 0 skipped frozen; tuples: 14000.00 removed, 1238000.00 remain, 0 are dead but not yet removable, oldest xmin: 7890500; I/O timings: read: 0.000 ms, write: 0.000 ms; elapsed time: 41.230 s
+2024-01-15 08:01:49.000 UTC [12346] app@myapp LOG:  duration: 1560.000 ms  statement: SELECT id, name, email FROM users WHERE id = 4444
+2024-01-15 08:01:50.000 UTC [12346] app@myapp LOG:  duration: 1670.000 ms  statement: SELECT id, name, email FROM users WHERE id = 5555
+2024-01-15 08:01:51.000 UTC [12387] app@myapp ERROR:  relation "deleted_table" does not exist (42P01)
+2024-01-15 08:01:52.000 UTC [12347] app@myapp LOG:  duration: 9800.000 ms  statement: UPDATE orders SET status = 'shipped', shipped_at = NOW(), tracking_number = 'TRK111222333' WHERE id IN (SELECT id FROM orders WHERE status = 'pending' AND created_at < NOW() - INTERVAL '1 day' LIMIT 2000)
+2024-01-15 08:01:53.000 UTC [12388] badpassword@myapp FATAL:  password authentication failed for user "badpassword"
+2024-01-15 08:01:54.000 UTC [12346] app@myapp LOG:  duration: 1780.000 ms  statement: SELECT id, name, email FROM users WHERE id = 6666
+2024-01-15 08:01:55.000 UTC [12389] app@myapp LOG:  checkpoint starting: wal
+2024-01-15 08:01:57.000 UTC [12389] app@myapp LOG:  checkpoint complete: wrote 1500 buffers (9.1%); 0 WAL file(s) added, 1 removed, 3 recycled; write=1.700 s, sync=0.200 s, total=2.150 s; distance=19456 kB, estimate=20480 kB
+2024-01-15 08:01:58.000 UTC [12346] app@myapp LOG:  duration: 1890.000 ms  statement: SELECT id, name, email FROM users WHERE id = 7777
+2024-01-15 08:01:59.000 UTC [12390] autovacuum LOG:  automatic vacuum of table "analytics.public.page_views": index scans: 1, pages: 1000 removed, 200000 remain, 0 skipped due to pins, 0 skipped frozen; tuples: 100000.00 removed, 50000000.00 remain, 0 are dead but not yet removable, oldest xmin: 7890600; I/O timings: read: 0.000 ms, write: 0.000 ms; elapsed time: 234.560 s
+2024-01-15 08:02:00.000 UTC [12346] app@myapp LOG:  disconnection: session time: 0:02:00.000 user=app database=myapp host=10.0.1.50 port=54321
+2024-01-15 08:02:01.000 UTC [12391] app@myapp LOG:  connection received: host=10.0.1.56 port=54331
+2024-01-15 08:02:01.001 UTC [12391] app@myapp LOG:  connection authorized: user=app database=myapp application_name=rails
+2024-01-15 08:02:02.000 UTC [12392] app@myapp LOG:  duration: 1100.000 ms  statement: SELECT id, name, email FROM users WHERE id = 8888
+2024-01-15 08:02:03.000 UTC [12393] app@myapp FATAL:  remaining connection slots are reserved for non-replication superuser connections
+2024-01-15 08:02:04.000 UTC [12347] app@myapp LOG:  duration: 2340.000 ms  statement: SELECT * FROM inventory_items WHERE warehouse_id = 6 AND quantity < reorder_point AND is_active = true
+2024-01-15 08:02:05.000 UTC [12394] app@myapp ERROR:  invalid input syntax for type integer: "abc" (22P02)
+	STATEMENT:  SELECT * FROM users WHERE id = 'abc'
+2024-01-15 08:02:06.000 UTC [12395] checkpoint LOG:  checkpoint occurring too frequently (1 seconds after last)
+2024-01-15 08:02:07.000 UTC [12346] app@myapp LOG:  duration: 1230.000 ms  statement: SELECT id, name, email FROM users WHERE id = 9999
+2024-01-15 08:02:08.000 UTC [12396] app@myapp LOG:  process 12396 still waiting for AccessShareLock on relation 98765 of database 16384; blocking processes: 12347
+	DETAIL:  Process holding the lock: 12347. Wait queue: 12396.
+2024-01-15 08:02:09.000 UTC [12397] app@myapp LOG:  duration: 12340.000 ms  statement: SELECT date_trunc('week', created_at), status, COUNT(*) FROM orders WHERE created_at > NOW() - INTERVAL '90 days' GROUP BY 1, 2 ORDER BY 1 DESC, 3 DESC
+2024-01-15 08:02:10.000 UTC [12398] system LOG:  database system is ready to accept connections

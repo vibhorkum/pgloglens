@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pgloglens"
+version = "2.0.0"
+description = "PostgreSQL log analyzer with LLM-powered root cause analysis"
+authors = [{name = "Vibhor Kumar"}]
+requires-python = ">=3.9"
+readme = "README.md"
+license = {text = "MIT"}
+keywords = ["postgresql", "log", "analyzer", "performance", "dba", "pgloglens"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: System :: Systems Administration",
+]
+# All hard dependencies are pure-Python wheels — no C/Rust compiler required.
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "tqdm>=4.65",
+    "pydantic>=2.0",
+    "python-dateutil>=2.8",
+    "jinja2>=3.1",
+]
+
+[project.scripts]
+pgloglens = "pgloglens.cli:main"
+
+[project.optional-dependencies]
+# LLM providers — install only what you need (all pure-Python SDKs)
+openai = ["openai>=1.0"]
+anthropic = ["anthropic>=0.20"]
+google = ["google-genai>=1.0"]
+all-llm = ["openai>=1.0", "anthropic>=0.20", "google-genai>=1.0"]
+# Optional speed/config extras (compiled — skip on s390x/ARM if they fail to build)
+yaml = ["pyyaml>=6.0"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21", "black>=23.0", "mypy>=1.0", "ruff>=0.1"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pgloglens*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
