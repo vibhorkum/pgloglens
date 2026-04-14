@@ -485,6 +485,14 @@ class AnalysisResult(BaseModel):
     queries_per_minute: float = 0.0
     anonymized: bool = False
 
+    # AI analysis results
+    ai_slow_query_analyses: List[Dict[str, Any]] = Field(default_factory=list)
+    ai_generated_config: Optional[str] = None
+    ai_index_recommendations: List[Dict[str, Any]] = Field(default_factory=list)
+
+    # pg_stat_statements correlation
+    pgss_correlation: Optional[Any] = None  # CorrelationResult from pgss module
+
     model_config = {"arbitrary_types_allowed": True}
 
     def model_post_init(self, __context: Any) -> None:

@@ -38,11 +38,15 @@ pgloglens/
 ├── cli.py       # Click commands - argument parsing, orchestration
 ├── parser.py    # Streaming log parser - 10 format handlers, auto-detect
 ├── analyzer.py  # Aggregation engine - slow queries, errors, connections, etc.
-├── rca.py       # 14+ deterministic RCA rules -> RCAFinding objects
+├── rca.py       # 22+ deterministic RCA rules -> RCAFinding objects
 ├── llm.py       # Unified LLM interface (OpenAI / Anthropic / Ollama / Google)
 ├── reporter.py  # 4 output renderers - terminal/HTML/JSON/Markdown
 ├── models.py    # Pydantic v2 data models
-├── prefix.py    # log_line_prefix pattern compiler
+├── prefix.py    # log_line_prefix pattern compiler (18 escape sequences)
+├── compare.py   # Diff/comparison functionality for before/after analysis
+├── timeline.py  # Incident timeline reconstruction from log events
+├── rules.py     # Custom rule pack support (YAML/TOML)
+├── pgss.py      # Optional pg_stat_statements snapshot correlation
 └── utils.py     # Utility functions (percentile calculations, etc.)
 ```
 
@@ -52,9 +56,13 @@ LogFile(s) -> parser.py -> LogEntry stream -> analyzer.py -> AnalysisResult
                                                                   |
                                                              rca.py -> RCAFinding list
                                                                   |
+                                                             rules.py -> Custom rules
+                                                                  |
                                                              llm.py -> AI analysis text
                                                                   |
                                                              reporter.py -> Report
+                                                                  |
+                                          compare.py / timeline.py -> Specialized outputs
 ```
 
 ## Key CLI Commands
@@ -64,6 +72,11 @@ LogFile(s) -> parser.py -> LogEntry stream -> analyzer.py -> AnalysisResult
 - `pgloglens dump` - Export normalized queries with stats
 - `pgloglens index-advisor` - AI-powered index recommendations
 - `pgloglens config init|show` - Configuration management
+- `pgloglens diff` - Compare two analyses to detect regressions
+- `pgloglens timeline` - Generate incident timeline from logs
+- `pgloglens save` - Save analysis artifact for later comparison
+- `pgloglens summary` - Quick 5-line health check with exit codes
+- `pgloglens rules init|list` - Custom rule pack management
 
 ## Supported Log Formats
 
@@ -112,6 +125,11 @@ Tests are organized by capability:
 |-----------|----------|
 | `test_parser.py` | Format detection, line parsing, extraction functions |
 | `test_analyzer.py` | Statistics, aggregation, RCA rules, output formats |
+| `test_prefix.py` | log_line_prefix compiler, all 18 escape sequences |
+| `test_compare.py` | Diff/comparison functionality, artifact save/load |
+| `test_timeline.py` | Incident timeline reconstruction |
+| `test_rules.py` | Custom rule packs, YAML parsing, severity overrides |
+| `test_pgss.py` | pg_stat_statements snapshot loading and correlation |
 | `test_integration.py` | End-to-end validation with Docker-generated logs |
 
 ### Adding New Tests

@@ -6,7 +6,8 @@
 
 ## Features
 
-- **Multi-format log parsing**: stderr, syslog, csvlog, jsonlog (PostgreSQL 15+), gzip-compressed
+### Core Analysis
+- **Multi-format log parsing**: stderr, syslog, csvlog, jsonlog (PostgreSQL 15+), pgbouncer, RDS, Heroku, Redshift, CloudSQL
 - **Slow query analysis**: normalized query patterns, P50/P95/P99 percentiles, regression detection
 - **Error pattern clustering**: SQLSTATE grouping, error storms, trend detection
 - **Lock & deadlock analysis**: lock chain reconstruction, most-blocking queries
@@ -15,9 +16,19 @@
 - **Autovacuum insights**: table frequency analysis, bloat indicators
 - **Temp file analysis**: work_mem candidates with size-based recommendations
 - **Replication lag events**: standby health monitoring
-- **Rule-based RCA**: 14 deterministic rules covering the most common PostgreSQL failure modes
+- **Rule-based RCA**: 22+ deterministic rules covering the most common PostgreSQL failure modes
 - **LLM-powered analysis**: send summarized findings to GPT-4o, Claude, Gemini, or local Ollama
 - **Four output formats**: terminal (rich), HTML (interactive), JSON, Markdown
+
+### New in v2.0
+- **Diff/Comparison Mode**: Compare two analyses side-by-side to detect regressions
+- **Incident Timeline**: Reconstruct chronological flow of events during incidents
+- **Save & Compare**: Save analysis artifacts for later comparison
+- **Custom Rule Packs**: Define custom RCA rules via YAML/TOML files
+- **pg_stat_statements Correlation**: Import and correlate with pgss snapshots
+- **Summary Mode**: Quick 5-line health check with exit codes for CI/CD
+- **Glob/Rotation Support**: Analyze rotated logs with glob patterns
+- **log_line_prefix Support**: Full support for 18 PostgreSQL escape sequences
 
 ## Installation
 
@@ -110,6 +121,104 @@ pgloglens config show        # Show resolved configuration
 
 Shows version and installed LLM provider packages.
 
+### `pgloglens diff`
+
+Compare two log analyses to detect regressions:
+
+```bash
+# Compare two log files/directories
+pgloglens diff logs/yesterday/ logs/today/
+
+# Compare saved artifacts
+pgloglens diff baseline.json after-deploy.json --format markdown -o diff.md
+
+# Compare with custom labels
+pgloglens diff prod-v1.2.log prod-v1.3.log --before-label "v1.2" --after-label "v1.3"
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--format` | `terminal` | Output format: `terminal`, `json`, `markdown`, `html` |
+| `--output`, `-o` | stdout | Output file path |
+| `--before-label` | `before` | Label for the before analysis |
+| `--after-label` | `after` | Label for the after analysis |
+
+### `pgloglens timeline`
+
+Generate an incident timeline from log events:
+
+```bash
+# Generate timeline from logs
+pgloglens timeline postgresql.log
+
+# Markdown output for incident reports
+pgloglens timeline logs/*.log --format markdown -o incident.md
+
+# Adjust time window for event grouping
+pgloglens timeline postgresql.log --window-minutes 10
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--format` | `terminal` | Output format: `terminal`, `json`, `markdown` |
+| `--output`, `-o` | stdout | Output file path |
+| `--window-minutes` | `5` | Time window for grouping related events |
+
+### `pgloglens save`
+
+Save analysis results as an artifact for later comparison:
+
+```bash
+# Save baseline analysis
+pgloglens save postgresql.log -o baseline.json --label production-baseline
+
+# Save pre-deploy state
+pgloglens save logs/*.log -o before-deploy.json
+```
+
+### `pgloglens summary`
+
+Quick health check with 5-line output (ideal for CI/CD):
+
+```bash
+# Quick summary
+pgloglens summary postgresql.log
+
+# With exit codes for CI/CD
+pgloglens summary logs/*.log --exit-code
+# Exit codes: 0=healthy, 1=critical issues, 2=high severity issues
+```
+
+### `pgloglens rules`
+
+Manage custom rule packs:
+
+```bash
+# Create example rule pack
+pgloglens rules init --path ~/.pgloglens/rules/custom.yaml
+
+# List available rule packs
+pgloglens rules list
+```
+
+### `pgloglens dump`
+
+Export normalized queries with statistics:
+
+```bash
+pgloglens dump postgresql.log --format csv -o queries.csv
+pgloglens dump postgresql.log --format json --min-count 5 --min-duration-ms 100
+```
+
+### `pgloglens index-advisor`
+
+AI-powered index recommendations:
+
+```bash
+pgloglens index-advisor postgresql.log --llm-provider openai
+pgloglens index-advisor pg.log --llm-provider anthropic --top-queries 15 -o indexes.json
+```
+
 ## LLM Provider Setup
 
 ### OpenAI
@@ -171,6 +280,68 @@ watch:
   alert_threshold_ms: 5000
   interval_seconds: 5
 ```
+
+## Custom Rule Packs
+
+Create custom RCA rules, override severity of built-in rules, and define ignore patterns:
+
+```yaml
+# ~/.pgloglens/rules/production.yaml
+name: production-rules
+version: "1.0"
+
+# Override severity of built-in rules
+severity_overrides:
+  AUTH_FAILURES_SPIKE: critical  # Make auth failures always critical
+  SLOW_CHECKPOINTS: low          # Downgrade on fast SSD systems
+
+# Ignore specific patterns
+ignore_patterns:
+  errors:
+    - "duplicate key.*temp_"     # Ignore temp table conflicts
+    - "canceling statement due to statement timeout"
+  queries:
+    - "^SELECT 1$"               # Ignore health checks
+
+# Custom rules
+custom_rules:
+  - rule_id: CUSTOM_LONG_TX
+    severity: high
+    title: "Long-running transactions detected"
+    condition: "result.session_stats.avg_session_duration_ms > 300000"
+    description: "Average session duration exceeds 5 minutes"
+    recommendations:
+      - "Review application connection handling"
+      - "Check for uncommitted transactions"
+```
+
+Use custom rules:
+
+```bash
+pgloglens analyze postgresql.log --rule-pack ~/.pgloglens/rules/production.yaml
+```
+
+## pg_stat_statements Correlation
+
+Correlate log analysis with `pg_stat_statements` data for deeper insights:
+
+```bash
+# Export pg_stat_statements to JSON
+psql -c "COPY (SELECT json_agg(row_to_json(t)) FROM (
+    SELECT queryid, query, calls, total_exec_time, mean_exec_time, rows,
+           shared_blks_hit, shared_blks_read, temp_blks_read, temp_blks_written
+    FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 1000
+) t) TO STDOUT;" > pgss_snapshot.json
+
+# Analyze with correlation
+pgloglens analyze postgresql.log --pgss-snapshot pgss_snapshot.json
+```
+
+This provides:
+- Match rate between log queries and pgss entries
+- Comparison of log durations vs cumulative pgss stats
+- Cache hit ratios and temp file usage from pgss
+- Queries that appear in logs but not pgss (dynamic SQL)
 
 ## Supported Log Formats
 

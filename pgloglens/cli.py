@@ -287,6 +287,14 @@ def main():
               help="Incremental mode: state file path")
 @click.option("--explode-by-database", "explode_dir", type=click.Path(), default=None,
               help="Generate one report per database in this directory")
+@click.option("--summary-only", is_flag=True, default=False,
+              help="Output only a 5-line summary (same as 'pgloglens summary')")
+@click.option("--exit-code", "use_exit_code", is_flag=True, default=False,
+              help="Exit with non-zero code if critical/high issues found")
+@click.option("--rule-pack", "rule_pack_path", type=click.Path(), default=None,
+              help="Path to custom rule pack (YAML/TOML)")
+@click.option("--pgss-snapshot", "pgss_snapshot_path", type=click.Path(), default=None,
+              help="Path to pg_stat_statements snapshot for correlation")
 def cmd_analyze(
     log_files: Tuple[str, ...],
     output_format: str,
@@ -327,6 +335,10 @@ def cmd_analyze(
     platform: str,
     incremental_file: Optional[str],
     explode_dir: Optional[str],
+    summary_only: bool,
+    use_exit_code: bool,
+    rule_pack_path: Optional[str],
+    pgss_snapshot_path: Optional[str],
 ):
     """Analyze one or more PostgreSQL log files.
 
@@ -444,11 +456,48 @@ def cmd_analyze(
     if platform != "auto":
         result.source_platform = platform
 
+    # Load custom rule pack if provided
+    rule_pack = None
+    if rule_pack_path:
+        try:
+            from .rules import load_rule_pack
+            rule_pack = load_rule_pack(rule_pack_path)
+            if verbose:
+                click.echo(f"[pgloglens] Loaded rule pack: {rule_pack.name} ({len(rule_pack.custom_rules)} custom rules)")
+        except Exception as e:
+            click.echo(f"[WARNING] Could not load rule pack: {e}", err=True)
+
     # RCA
     if not no_rca:
         if verbose:
             click.echo("[pgloglens] Running rule-based RCA...")
         run_rca(result)
+
+        # Apply rule pack overrides and custom rules
+        if rule_pack:
+            from .rules import apply_rule_pack_to_findings
+            result.rca_findings = apply_rule_pack_to_findings(result.rca_findings, rule_pack)
+            # Evaluate custom rules
+            custom_findings = rule_pack.evaluate_custom_rules(result)
+            if custom_findings:
+                result.rca_findings.extend(custom_findings)
+                if verbose:
+                    click.echo(f"  Added {len(custom_findings)} findings from custom rules")
+
+    # pg_stat_statements correlation
+    if pgss_snapshot_path:
+        try:
+            from .pgss import load_pgss_snapshot, correlate_with_pgss, enrich_result_with_pgss
+            if verbose:
+                click.echo(f"[pgloglens] Loading pg_stat_statements snapshot: {pgss_snapshot_path}")
+            pgss_snapshot = load_pgss_snapshot(pgss_snapshot_path)
+            enrich_result_with_pgss(result, pgss_snapshot)
+            correlation = correlate_with_pgss(result, pgss_snapshot)
+            result.pgss_correlation = correlation
+            if verbose:
+                click.echo(f"  Matched {correlation.matched_count}/{correlation.total_log_queries} queries ({correlation.match_rate*100:.1f}%)")
+        except Exception as e:
+            click.echo(f"[WARNING] Could not load pgss snapshot: {e}", err=True)
 
     # Main LLM analysis
     if llm_provider != "none":
@@ -565,7 +614,39 @@ def cmd_analyze(
         click.echo(f"  Error patterns: {len(result.error_patterns)}")
         click.echo(f"  RCA findings: {len(result.rca_findings)}")
 
+    # Summary-only mode: just print 5-line summary and optionally exit
+    if summary_only:
+        critical_count = sum(1 for f in result.rca_findings if f.severity.value == "CRITICAL")
+        high_count = sum(1 for f in result.rca_findings if f.severity.value == "HIGH")
+
+        click.echo(f"Entries: {result.total_entries:,}")
+        click.echo(f"Slow queries: {len(result.slow_queries)} patterns")
+        click.echo(f"Errors: {len(result.error_patterns)} patterns | Deadlocks: {result.deadlock_count}")
+        click.echo(f"Findings: {critical_count} critical, {high_count} high, {len(result.rca_findings) - critical_count - high_count} other")
+
+        if result.rca_findings:
+            top = result.rca_findings[0]
+            click.echo(f"Top issue: [{top.severity.value}] {top.title}")
+        else:
+            click.echo("Top issue: None")
+
+        if use_exit_code:
+            if critical_count > 0:
+                sys.exit(1)
+            elif high_count > 0:
+                sys.exit(2)
+        return
+
     _write_report(result, output_format, output_file)
+
+    # Exit code based on severity (even without summary_only)
+    if use_exit_code:
+        critical_count = sum(1 for f in result.rca_findings if f.severity.value == "CRITICAL")
+        high_count = sum(1 for f in result.rca_findings if f.severity.value == "HIGH")
+        if critical_count > 0:
+            sys.exit(1)
+        elif high_count > 0:
+            sys.exit(2)
 
     # Save incremental state
     if incremental_file:
@@ -1414,6 +1495,466 @@ def cmd_version():
     click.echo("  - 5 new HTML report tabs: Sessions, Query Types, Prepare/Execute, Auto-Explain, PgBouncer")
     click.echo("  - New commands: pgloglens dump, pgloglens index-advisor")
     click.echo("  - New analyze options: --application, --host, --exclude-query, --ai-slow-queries, --platform, and more")
+
+
+# ---------------------------------------------------------------------------
+# diff command (comparison)
+# ---------------------------------------------------------------------------
+
+@main.command("diff")
+@click.argument("before", type=str)
+@click.argument("after", type=str)
+@click.option("--format", "-f", "output_format",
+              type=click.Choice(["terminal", "json", "markdown", "html"], case_sensitive=False),
+              default="terminal", show_default=True, help="Output format")
+@click.option("--output", "-o", "output_file", type=click.Path(), default=None,
+              help="Output file path")
+@click.option("--before-label", type=str, default="before",
+              help="Label for the before analysis")
+@click.option("--after-label", type=str, default="after",
+              help="Label for the after analysis")
+@click.option("--slow-query-threshold", type=float, default=1000.0,
+              help="Slow query threshold when parsing logs")
+@click.option("--verbose", "-v", is_flag=True, default=False)
+def cmd_diff(
+    before: str,
+    after: str,
+    output_format: str,
+    output_file: Optional[str],
+    before_label: str,
+    after_label: str,
+    slow_query_threshold: float,
+    verbose: bool,
+):
+    """Compare two log analyses and show differences.
+
+    BEFORE and AFTER can be:
+      - Paths to log files or directories
+      - Paths to saved analysis artifacts (.json)
+
+    \b
+    Examples:
+      pgloglens diff logs/yesterday/ logs/today/
+      pgloglens diff baseline.json postgresql.log
+      pgloglens diff before.json after.json --format markdown -o diff.md
+      pgloglens diff prod-v1.2.json prod-v1.3.json --format html -o diff.html
+    """
+    from .compare import (
+        compare_results, load_analysis_artifact, save_analysis_artifact,
+        render_comparison_text, render_comparison_markdown,
+    )
+
+    def _load_or_analyze(path_str: str, label: str) -> AnalysisResult:
+        """Load from artifact or analyze log files."""
+        path = Path(path_str)
+
+        # Check if it's a saved artifact
+        if path.suffix == ".json" and path.exists():
+            try:
+                result, metadata = load_analysis_artifact(str(path))
+                if verbose:
+                    click.echo(f"[pgloglens] Loaded artifact: {path} (label: {metadata.get('label', 'unknown')})")
+                return result
+            except Exception as e:
+                if verbose:
+                    click.echo(f"[pgloglens] Could not load as artifact: {e}")
+
+        # Treat as log file(s)
+        log_files = _discover_log_files(path_str)
+        if not log_files:
+            raise click.UsageError(f"No log files found: {path_str}")
+
+        if verbose:
+            click.echo(f"[pgloglens] Analyzing {len(log_files)} file(s) for '{label}'...")
+
+        return _run_analysis(
+            log_files=log_files,
+            slow_query_threshold=slow_query_threshold,
+            from_dt=None,
+            to_dt=None,
+            database=None,
+            user=None,
+            top_queries=100,
+            top_errors=50,
+            verbose=verbose,
+            workers=None,
+        )
+
+    # Load/analyze both
+    before_result = _load_or_analyze(before, before_label)
+    after_result = _load_or_analyze(after, after_label)
+
+    # Compare
+    comparison = compare_results(
+        before_result, after_result,
+        before_label=before_label,
+        after_label=after_label,
+    )
+
+    # Render output
+    if output_format == "json":
+        content = json.dumps(comparison.to_dict(), indent=2, default=str)
+    elif output_format == "markdown":
+        content = render_comparison_markdown(comparison)
+    elif output_format == "html":
+        # Use markdown as fallback for HTML
+        content = f"<html><body><pre>{render_comparison_markdown(comparison)}</pre></body></html>"
+    else:
+        content = render_comparison_text(comparison)
+
+    if output_file:
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(content)
+        click.echo(f"Diff written to: {output_file}")
+    else:
+        click.echo(content)
+
+    # Summary
+    summary = comparison.summary()
+    if summary["queries"]["slower"] > 0 or summary["errors"]["new"] > 0:
+        if verbose:
+            click.echo(f"\n[REGRESSION WARNING] {summary['queries']['slower']} queries got slower, {summary['errors']['new']} new errors", err=True)
+
+
+# ---------------------------------------------------------------------------
+# timeline command
+# ---------------------------------------------------------------------------
+
+@main.command("timeline")
+@click.argument("log_files", nargs=-1, required=True, type=str)
+@click.option("--format", "-f", "output_format",
+              type=click.Choice(["terminal", "json", "markdown"], case_sensitive=False),
+              default="terminal", show_default=True, help="Output format")
+@click.option("--output", "-o", "output_file", type=click.Path(), default=None,
+              help="Output file path")
+@click.option("--window-minutes", type=int, default=5, show_default=True,
+              help="Time window for grouping related events (minutes)")
+@click.option("--slow-query-threshold", type=float, default=1000.0,
+              help="Slow query threshold (ms)")
+@click.option("--verbose", "-v", is_flag=True, default=False)
+def cmd_timeline(
+    log_files: Tuple[str, ...],
+    output_format: str,
+    output_file: Optional[str],
+    window_minutes: int,
+    slow_query_threshold: float,
+    verbose: bool,
+):
+    """Generate an incident timeline from PostgreSQL logs.
+
+    Reconstructs the flow of events including error bursts, deadlocks,
+    checkpoint spikes, autovacuum events, and more.
+
+    \b
+    Examples:
+      pgloglens timeline postgresql.log
+      pgloglens timeline logs/*.log --format markdown -o incident.md
+      pgloglens timeline postgresql.log --window-minutes 10
+    """
+    from .timeline import build_timeline, render_timeline_text, render_timeline_markdown
+
+    # Discover files
+    all_files = []
+    for pattern in log_files:
+        all_files.extend(_discover_log_files(pattern))
+
+    if not all_files:
+        raise click.UsageError("No log files found")
+
+    if verbose:
+        click.echo(f"[pgloglens] Building timeline from {len(all_files)} file(s)...")
+
+    # Analyze
+    result = _run_analysis(
+        log_files=all_files,
+        slow_query_threshold=slow_query_threshold,
+        from_dt=None,
+        to_dt=None,
+        database=None,
+        user=None,
+        top_queries=50,
+        top_errors=50,
+        verbose=verbose,
+        workers=None,
+    )
+
+    # Run RCA to populate findings
+    run_rca(result)
+
+    # Build timeline
+    timeline = build_timeline(result, window_minutes=window_minutes)
+
+    if verbose:
+        click.echo(f"[pgloglens] Found {timeline.total_events} events ({timeline.critical_events} critical, {timeline.high_events} high)")
+
+    # Render output
+    if output_format == "json":
+        content = json.dumps(timeline.to_dict(), indent=2, default=str)
+    elif output_format == "markdown":
+        content = render_timeline_markdown(timeline)
+    else:
+        content = render_timeline_text(timeline)
+
+    if output_file:
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(content)
+        click.echo(f"Timeline written to: {output_file}")
+    else:
+        click.echo(content)
+
+
+# ---------------------------------------------------------------------------
+# save command
+# ---------------------------------------------------------------------------
+
+@main.command("save")
+@click.argument("log_files", nargs=-1, required=True, type=str)
+@click.option("--output", "-o", "output_file", type=click.Path(), required=True,
+              help="Output artifact file path (.json)")
+@click.option("--label", type=str, default=None,
+              help="Label for this analysis (e.g., 'prod-v1.2', 'baseline')")
+@click.option("--slow-query-threshold", type=float, default=1000.0,
+              help="Slow query threshold (ms)")
+@click.option("--verbose", "-v", is_flag=True, default=False)
+def cmd_save(
+    log_files: Tuple[str, ...],
+    output_file: str,
+    label: Optional[str],
+    slow_query_threshold: float,
+    verbose: bool,
+):
+    """Save analysis results as an artifact for later comparison.
+
+    Creates a JSON artifact that can be used with 'pgloglens diff'.
+
+    \b
+    Examples:
+      pgloglens save postgresql.log -o baseline.json --label production-baseline
+      pgloglens save logs/*.log -o before-deploy.json
+    """
+    from .compare import save_analysis_artifact
+
+    # Discover files
+    all_files = []
+    for pattern in log_files:
+        all_files.extend(_discover_log_files(pattern))
+
+    if not all_files:
+        raise click.UsageError("No log files found")
+
+    if verbose:
+        click.echo(f"[pgloglens] Analyzing {len(all_files)} file(s)...")
+
+    # Analyze
+    result = _run_analysis(
+        log_files=all_files,
+        slow_query_threshold=slow_query_threshold,
+        from_dt=None,
+        to_dt=None,
+        database=None,
+        user=None,
+        top_queries=100,
+        top_errors=50,
+        verbose=verbose,
+        workers=None,
+    )
+
+    # Run RCA
+    run_rca(result)
+
+    # Auto-generate label if not provided
+    if not label:
+        label = f"analysis-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+    # Save
+    save_analysis_artifact(result, output_file, label=label)
+    click.echo(f"Analysis saved to: {output_file} (label: {label})")
+
+
+# ---------------------------------------------------------------------------
+# summary command (quick health check)
+# ---------------------------------------------------------------------------
+
+@main.command("summary")
+@click.argument("log_files", nargs=-1, required=True, type=str)
+@click.option("--slow-query-threshold", type=float, default=1000.0,
+              help="Slow query threshold (ms)")
+@click.option("--exit-code", is_flag=True, default=False,
+              help="Exit with non-zero code if issues found")
+def cmd_summary(
+    log_files: Tuple[str, ...],
+    slow_query_threshold: float,
+    exit_code: bool,
+):
+    """Quick summary of log health (5-line output).
+
+    Ideal for CI/CD, cron jobs, and quick health checks.
+
+    Exit codes (when --exit-code is set):
+      0: No critical or high severity issues
+      1: Critical issues found
+      2: High severity issues found
+
+    \b
+    Examples:
+      pgloglens summary postgresql.log
+      pgloglens summary logs/*.log --exit-code
+    """
+    # Discover files
+    all_files = []
+    for pattern in log_files:
+        all_files.extend(_discover_log_files(pattern))
+
+    if not all_files:
+        raise click.UsageError("No log files found")
+
+    # Analyze
+    result = _run_analysis(
+        log_files=all_files,
+        slow_query_threshold=slow_query_threshold,
+        from_dt=None,
+        to_dt=None,
+        database=None,
+        user=None,
+        top_queries=25,
+        top_errors=20,
+        verbose=False,
+        workers=None,
+    )
+
+    # Run RCA
+    run_rca(result)
+
+    # Count findings by severity
+    critical_count = sum(1 for f in result.rca_findings if f.severity.value == "CRITICAL")
+    high_count = sum(1 for f in result.rca_findings if f.severity.value == "HIGH")
+
+    # Summary output (5 lines)
+    click.echo(f"Entries: {result.total_entries:,}")
+    click.echo(f"Slow queries: {len(result.slow_queries)} patterns")
+    click.echo(f"Errors: {len(result.error_patterns)} patterns | Deadlocks: {result.deadlock_count}")
+    click.echo(f"Findings: {critical_count} critical, {high_count} high, {len(result.rca_findings) - critical_count - high_count} other")
+
+    # Top finding
+    if result.rca_findings:
+        top = result.rca_findings[0]
+        click.echo(f"Top issue: [{top.severity.value}] {top.title}")
+    else:
+        click.echo("Top issue: None")
+
+    # Exit code
+    if exit_code:
+        if critical_count > 0:
+            sys.exit(1)
+        elif high_count > 0:
+            sys.exit(2)
+        sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# rules command (custom rule pack management)
+# ---------------------------------------------------------------------------
+
+@main.group("rules")
+def cmd_rules():
+    """Manage custom rule packs."""
+
+
+@cmd_rules.command("init")
+@click.option("--path", type=click.Path(), default=None,
+              help="Output path (default: ~/.pgloglens/rules/custom.yaml)")
+def cmd_rules_init(path: Optional[str]):
+    """Create an example custom rule pack."""
+    from .rules import create_example_rule_pack
+
+    if path is None:
+        rules_dir = Path.home() / ".pgloglens" / "rules"
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        path = str(rules_dir / "custom.yaml")
+
+    create_example_rule_pack(path)
+    click.echo(f"Example rule pack created: {path}")
+    click.echo("\nTo use: pgloglens analyze logs.log --rule-pack " + path)
+
+
+@cmd_rules.command("list")
+def cmd_rules_list():
+    """List available rule packs."""
+    from .rules import discover_rule_packs, load_rule_pack
+
+    packs = discover_rule_packs()
+
+    if not packs:
+        click.echo("No rule packs found.")
+        click.echo("\nTo create one: pgloglens rules init")
+        return
+
+    click.echo(f"Found {len(packs)} rule pack(s):\n")
+    for pack_path in packs:
+        try:
+            pack = load_rule_pack(pack_path)
+            click.echo(f"  {pack.name} ({pack.version})")
+            click.echo(f"    Path: {pack_path}")
+            click.echo(f"    Custom rules: {len(pack.custom_rules)}")
+            click.echo(f"    Severity overrides: {len(pack.severity_overrides)}")
+            click.echo(f"    Ignore patterns: {len(pack.ignore_error_patterns)} errors, {len(pack.ignore_query_patterns)} queries")
+            click.echo()
+        except Exception as e:
+            click.echo(f"  [error] {pack_path}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# File discovery helpers
+# ---------------------------------------------------------------------------
+
+def _discover_log_files(pattern: str) -> List[str]:
+    """Discover log files from a path or glob pattern.
+
+    Handles:
+      - Single file path
+      - Directory (finds *.log, *.log.*, rotated files)
+      - Glob pattern (*.log, **/*.log)
+    """
+    import glob
+
+    path = Path(pattern)
+
+    # If it's an existing file, return it
+    if path.is_file():
+        return [str(path)]
+
+    # If it's a directory, find log files
+    if path.is_dir():
+        files = []
+        # Common log file patterns
+        for ext in ["*.log", "*.log.*", "postgresql-*.log", "postgresql.log.*"]:
+            files.extend(glob.glob(str(path / ext)))
+        # Sort by modification time (newest last for proper ordering)
+        files.sort(key=lambda f: Path(f).stat().st_mtime)
+        return files
+
+    # Try as glob pattern
+    files = glob.glob(pattern, recursive=True)
+    if files:
+        files.sort(key=lambda f: Path(f).stat().st_mtime if Path(f).exists() else 0)
+        return files
+
+    # Try with .gz suffix
+    gz_pattern = pattern + ".gz" if not pattern.endswith(".gz") else pattern
+    files = glob.glob(gz_pattern, recursive=True)
+    if files:
+        files.sort(key=lambda f: Path(f).stat().st_mtime if Path(f).exists() else 0)
+        return files
+
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Enhanced analyze command options (add to existing)
+# ---------------------------------------------------------------------------
+
+# Note: The --summary-only and --exit-code flags are added to the analyze command
+# They work with the existing analyze infrastructure
 
 
 if __name__ == "__main__":
