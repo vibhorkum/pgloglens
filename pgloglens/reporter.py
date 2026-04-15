@@ -1221,7 +1221,7 @@ def render_html(result: AnalysisResult) -> str:
 
 <div class="header">
   <div>
-    <div class="header-logo">pg<span>analyzer</span> <small style="font-size:14px;opacity:0.7">v2.0</small></div>
+    <div class="header-logo">pg<span>Loglens</span> <small style="font-size:14px;opacity:0.7">v2.0</small></div>
     <div class="header-meta">PostgreSQL Log Analysis Report &bull; {_e(time_range)}</div>
     <div class="header-meta">Files: {_e(", ".join(result.log_file_paths))} &bull; Platform: {_e(platform)}</div>
   </div>

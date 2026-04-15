@@ -248,3 +248,102 @@ def test_gzip_file_not_crash(tmp_path):
     parser = LogParser()
     entries = list(parser.parse_file(gz_path, show_progress=False))
     assert len(entries) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: SQL capture bugs
+# ---------------------------------------------------------------------------
+
+def test_statement_only_line_sets_query():
+    """
+    Regression: log_statement='all' + log_duration=on emits SQL and duration
+    as SEPARATE log entries.  The statement-only line must set entry.query even
+    though there is no duration on that line.
+    """
+    from pgloglens.parser import _parse_stderr_line
+    line = "2024-01-15 09:00:00.000 UTC [9999] postgres@mydb LOG:  statement: SELECT * FROM orders WHERE id = 42"
+    entry = _parse_stderr_line(line, 1)
+    assert entry is not None
+    assert entry.query is not None, "SQL must be extracted from statement-only line"
+    assert "SELECT" in entry.query
+    assert entry.duration_ms is None  # no duration on this line
+
+
+def test_duration_only_line_no_sql_in_query():
+    """
+    A bare duration line (log_duration=on, no statement logging) must NOT
+    set entry.query to the raw 'duration: X ms' message text — that would
+    pollute the slow-query table with fake 'queries'.
+    """
+    from pgloglens.parser import _parse_stderr_line
+    line = "2024-01-15 09:00:01.000 UTC [9999] postgres@mydb LOG:  duration: 1234.567 ms"
+    entry = _parse_stderr_line(line, 2)
+    assert entry is not None
+    assert entry.duration_ms == pytest.approx(1234.567)
+    # entry.query must remain None — the raw duration message is NOT a SQL query
+    assert entry.query is None
+
+
+def test_execute_phase_line_without_duration_sets_query():
+    """
+    An 'execute <name>: SELECT ...' line (extended query protocol, no duration)
+    must set entry.query so the SQL is available for correlation.
+    """
+    from pgloglens.parser import _parse_stderr_line
+    line = "2024-01-15 09:00:02.000 UTC [9999] postgres@mydb LOG:  execute <unnamed>: SELECT $1 FROM users"
+    entry = _parse_stderr_line(line, 3)
+    assert entry is not None
+    assert entry.query is not None
+    assert "SELECT" in entry.query
+    assert entry.phase == "execute"
+
+
+def test_pid_correlation_attaches_sql_to_duration_entry():
+    """
+    Regression: when log_statement='all' + log_duration=on are used together,
+    the Analyzer must correlate the statement line with the subsequent duration
+    line from the same PID so that the slow-query table shows actual SQL.
+    """
+    from pgloglens.parser import _parse_stderr_line
+    from pgloglens.analyzer import Analyzer
+
+    stmt_line = "2024-01-15 09:00:00.000 UTC [7777] postgres@mydb LOG:  statement: SELECT * FROM big_table WHERE status = 'open'"
+    dur_line  = "2024-01-15 09:00:02.500 UTC [7777] postgres@mydb LOG:  duration: 2500.000 ms"
+
+    entries = [
+        _parse_stderr_line(stmt_line, 1),
+        _parse_stderr_line(dur_line, 2),
+    ]
+    entries = [e for e in entries if e is not None]
+    assert len(entries) == 2
+
+    analyzer = Analyzer(log_file_paths=["test"], slow_query_threshold_ms=1000.0)
+    result = analyzer.process_entries(iter(entries))
+
+    # The slow query must carry the real SQL, not "duration: 2500.000 ms"
+    assert len(result.slow_queries) >= 1
+    sq = result.slow_queries[0]
+    assert "SELECT" in sq.query, (
+        f"Expected SQL in slow query, got: {sq.query!r}. "
+        "PID-based correlation may be broken."
+    )
+    assert "duration:" not in sq.query.lower()
+
+
+def test_branding_in_html_report():
+    """
+    Regression: the HTML report header must say 'pgLoglens', not 'pganalyzer'.
+    The HTML template splits the name across a <span> tag so we search for the
+    component parts rather than the concatenated string.
+    """
+    import pathlib
+    reporter_path = pathlib.Path(__file__).parent.parent / "pgloglens" / "reporter.py"
+    text = reporter_path.read_text()
+    # The old wrong brand must be absent
+    assert "pganalyzer" not in text, (
+        "HTML report still contains 'pganalyzer' — should say 'pgLoglens'"
+    )
+    # The correct brand: header-logo contains 'Loglens' inside a <span>
+    assert "Loglens</span>" in text, (
+        "HTML report header-logo should contain 'Loglens</span>'"
+    )

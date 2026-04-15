@@ -329,6 +329,17 @@ _PARSE_DURATION_RE = re.compile(r'duration:\s*([\d.]+)\s*ms\s+parse\s+', re.IGNO
 _BIND_DURATION_RE = re.compile(r'duration:\s*([\d.]+)\s*ms\s+bind\s+', re.IGNORECASE)
 _EXECUTE_DURATION_RE = re.compile(r'duration:\s*([\d.]+)\s*ms\s+(?:statement|execute)', re.IGNORECASE)
 
+# Statement-only line (no duration prefix): "statement: SELECT ..."
+# Emitted when log_statement='all' is configured alongside log_duration=on.
+# In that mode PostgreSQL writes two separate log entries per query:
+#   LOG:  statement: SELECT ...   (at query start — no duration here)
+#   LOG:  duration: 1.234 ms      (at query end   — no SQL here)
+# The parse/execute variants cover the extended-query-protocol equivalents.
+_STMT_ONLY_RE = re.compile(
+    r"^(?:statement|execute\s+\S*|parse\s+\S*):\s+(.+)",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # auto_explain patterns
 _AUTO_EXPLAIN_START_RE = re.compile(r'Query Text:\s*(.*)', re.IGNORECASE)
 _AUTO_EXPLAIN_PLAN_RE = re.compile(
@@ -710,24 +721,42 @@ def _enrich_entry(entry: LogEntry) -> None:
     """Enrich a log entry with derived fields (duration, query, error_code, query_type, phase)."""
     msg = entry.message
 
-    # Duration
+    # Case 1: duration + SQL on the same line — most common with log_min_duration_statement
+    #   "duration: 1234 ms  statement: SELECT ..."
+    #   "duration: 1234 ms  execute <name>: SELECT ..."
     dm = _DURATION_STMT_RE.search(msg)
     if dm:
         entry.duration_ms = float(dm.group(1))
         if not entry.query:
             entry.query = dm.group(2).strip()
     else:
+        # Case 2: bare duration with no SQL (log_duration=on without statement logging)
         dm2 = _DURATION_RE.search(msg)
         if dm2:
             entry.duration_ms = float(dm2.group(1))
 
+    # Case 3: statement-only line (no duration) — emitted when log_statement='all'
+    # combined with log_duration=on.  The SQL and duration are logged as *separate*
+    # entries for the same PID; the Analyzer correlates them by PID.
+    if not entry.query:
+        sm = _STMT_ONLY_RE.match(msg)
+        if sm:
+            entry.query = sm.group(1).strip()
+
+    # Case 4: phase lines without duration (parse/bind/execute — extended query protocol)
+    # Extract SQL even when there is no duration prefix on the line.
+    if not entry.query:
+        m = _PARSE_PHASE_RE.search(msg) or _EXECUTE_PHASE_RE.search(msg)
+        if m:
+            entry.query = m.group(2).strip()
+
     # SQLSTATE
     if not entry.error_code:
-        sm = _SQLSTATE_RE.search(msg) or _ERROR_CODE_RE.search(msg)
-        if sm:
-            entry.error_code = sm.group(1)
+        sm2 = _SQLSTATE_RE.search(msg) or _ERROR_CODE_RE.search(msg)
+        if sm2:
+            entry.error_code = sm2.group(1)
 
-    # Parse/bind/execute phase detection
+    # Parse/bind/execute phase detection (sets entry.phase for phase-split tracking)
     if _PARSE_DURATION_RE.search(msg):
         entry.phase = "parse"
     elif _BIND_DURATION_RE.search(msg):
@@ -741,7 +770,7 @@ def _enrich_entry(entry: LogEntry) -> None:
     elif _EXECUTE_PHASE_RE.search(msg):
         entry.phase = "execute"
 
-    # Query type detection
+    # Query type detection — prefer actual query text over raw message
     query_text = entry.query or msg
     if query_text:
         entry.query_type = detect_query_type(query_text)

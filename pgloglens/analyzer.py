@@ -933,9 +933,38 @@ class Analyzer:
         """
         start = datetime.now()
 
+        # PID-based SQL correlation for the two-line log_statement + log_duration format.
+        #
+        # When PostgreSQL is configured with log_statement='all' and log_duration=on,
+        # it writes two *separate* log entries per query — one with the SQL at query
+        # start, one with the duration at query end:
+        #
+        #   LOG:  statement: SELECT * FROM orders WHERE id = 42   ← SQL only (no duration)
+        #   LOG:  duration: 1234.567 ms                           ← duration only (no SQL)
+        #
+        # The parser enriches the first entry with entry.query and the second with
+        # entry.duration_ms, but neither entry is complete on its own.  We correlate
+        # them here by PID: buffer the most recent statement per PID and attach it
+        # to the next duration-only entry from the same PID.
+        _pid_stmt_cache: Dict[int, str] = {}  # pid -> SQL text
+
         # Collect all entries (needed for multi-pass analyzers)
         all_entries: List[LogEntry] = []
         for entry in entries:
+            # PID-based correlation: attach buffered SQL to duration-only entries
+            if entry.pid is not None:
+                if entry.query and not entry.duration_ms:
+                    # Statement line (SQL but no duration) — buffer it
+                    _pid_stmt_cache[entry.pid] = entry.query
+                elif entry.duration_ms is not None and not entry.query:
+                    # Duration-only line — pull associated SQL from cache
+                    cached_sql = _pid_stmt_cache.pop(entry.pid, None)
+                    if cached_sql:
+                        entry.query = cached_sql
+                        if not entry.query_type:
+                            from .parser import detect_query_type
+                            entry.query_type = detect_query_type(cached_sql)
+
             all_entries.append(entry)
             self._total_entries += 1
             self._total_lines += 1
