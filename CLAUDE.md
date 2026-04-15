@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-pgloglens is a PostgreSQL log analyzer with LLM-powered root cause analysis. It parses PostgreSQL log files (stderr, syslog, csvlog, jsonlog, gzip-compressed) and produces actionable insights including rule-based RCA and optional AI-powered diagnosis via OpenAI, Anthropic, Google Gemini, or Ollama.
+pgloglens is a PostgreSQL log analyzer with LLM-powered root cause analysis. It parses PostgreSQL log files (stderr, syslog, csvlog, jsonlog, gzip-compressed) and produces actionable insights including rule-based RCA and optional AI-powered diagnosis via OpenAI, Anthropic, Google Gemini, or Ollama. Outputs: terminal, HTML, JSON, Markdown, JSONL (streaming).
 
 Author: Vibhor Kumar
 
@@ -29,6 +29,12 @@ mypy pgloglens/
 # Run analyzer against sample log
 python -m pgloglens.cli analyze tests/sample_pg.log --verbose
 python -m pgloglens.cli analyze tests/sample_pg.log --format html -o /tmp/report.html
+
+# Stream raw entries as JSONL (bypasses analysis pipeline)
+python -m pgloglens.cli analyze tests/sample_pg.log --format jsonl | jq .
+
+# Summarize with CI-friendly exit codes (default on; use --no-exit-code to suppress)
+python -m pgloglens.cli summary tests/sample_pg.log
 ```
 
 ## Architecture
@@ -40,7 +46,7 @@ pgloglens/
 ├── analyzer.py  # Aggregation engine - slow queries, errors, connections, etc.
 ├── rca.py       # 22+ deterministic RCA rules -> RCAFinding objects
 ├── llm.py       # Unified LLM interface (OpenAI / Anthropic / Ollama / Google)
-├── reporter.py  # 4 output renderers - terminal/HTML/JSON/Markdown
+├── reporter.py  # 5 output renderers - terminal/HTML/JSON/Markdown/JSONL
 ├── models.py    # Pydantic v2 data models
 ├── prefix.py    # log_line_prefix pattern compiler (18 escape sequences)
 ├── compare.py   # Diff/comparison functionality for before/after analysis
@@ -53,16 +59,18 @@ pgloglens/
 **Data flow:**
 ```
 LogFile(s) -> parser.py -> LogEntry stream -> analyzer.py -> AnalysisResult
-                                                                  |
-                                                             rca.py -> RCAFinding list
-                                                                  |
-                                                             rules.py -> Custom rules
+                 |                                                |
+          parse_errors /                                    rca.py (RCAConfig) -> RCAFinding list
+          entries_attempted                                       |
+          (warn if ≥5% fail)                                rules.py -> Custom rules
                                                                   |
                                                              llm.py -> AI analysis text
                                                                   |
                                                              reporter.py -> Report
                                                                   |
                                           compare.py / timeline.py -> Specialized outputs
+
+JSONL path (--format jsonl): LogFile(s) -> parser.py -> LogEntry stream -> stdout/file (bypasses analyzer)
 ```
 
 ## Key CLI Commands
@@ -75,8 +83,38 @@ LogFile(s) -> parser.py -> LogEntry stream -> analyzer.py -> AnalysisResult
 - `pgloglens diff` - Compare two analyses to detect regressions
 - `pgloglens timeline` - Generate incident timeline from logs
 - `pgloglens save` - Save analysis artifact for later comparison
-- `pgloglens summary` - Quick 5-line health check with exit codes
+- `pgloglens summary` - Quick 5-line health check; exits non-zero on issues by default (`--no-exit-code` to suppress)
 - `pgloglens rules init|list` - Custom rule pack management
+
+## Notable Implementation Details
+
+### Configurable RCA Thresholds
+`rca.py` exposes an `RCAConfig` dataclass (22 fields) with defaults matching the original hardcoded values. A module-level `_rca_config` global is set by `run_rca()` before executing rules; individual rules call `get_rca_config()` to read it. Config file key: `rca_thresholds` (map of field names to numeric overrides). Example:
+
+```toml
+[rca_thresholds]
+connection_warn = 150
+temp_file_mb = 256
+deadlock_count = 3
+```
+
+### Parse Error Visibility
+`LogParser` accumulates `parse_errors` and `entries_attempted` counters during parsing. After `process_entries()`, `cli.py` copies these to `AnalysisResult` and emits a stderr warning when the error rate is ≥5%. This surfaces log format mismatches early without failing the run.
+
+### JSONL Output Format (`--format jsonl`)
+JSONL exits the analysis pipeline early in `cmd_analyze` — it calls `_stream_jsonl()` which writes one JSON object per line (each a serialized `LogEntry`) to stdout or `-o FILE`. No `AnalysisResult` is produced. Useful for piping into `jq` or custom tooling.
+
+### Relative Time Flags
+`--from-time` / `--until-time` accept `2h`, `30m`, `7d` (no leading minus). The `_parse_relative_time()` helper strips any accidental minus prefix, then tries `h`/`m`/`d` suffixes before falling back to dateutil/fromisoformat for absolute timestamps.
+
+### `pgloglens dump` Default Duration
+`--min-duration-ms` defaults to **100 ms** (was 0). Prevents noise from trivial queries in dump output.
+
+### `pgloglens summary` Exit Codes
+Exit codes are **on by default**. Use `--no-exit-code` to suppress (e.g., in non-CI contexts). Exit 0 = healthy, 1 = warnings, 2 = critical issues.
+
+### Reporter and `--top-queries`
+The analyzer already truncates `result.slow_queries` to `[:self.top_queries]` before storing. The reporter renders all entries in the list without an additional cap, so `--top-queries N` is fully respected.
 
 ## Supported Log Formats
 

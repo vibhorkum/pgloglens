@@ -991,6 +991,10 @@ class LogParser:
         self._include_query_re = [
             re.compile(p, re.IGNORECASE) for p in (include_query_re or [])
         ]
+        # Parse health counters — reset per LogParser instance, accumulate across files
+        self.parse_errors: int = 0
+        self.entries_attempted: int = 0
+
         # Compile the log_line_prefix engine if provided
         self._prefix_compiler = None
         if log_line_prefix:
@@ -1324,9 +1328,14 @@ class LogParser:
             if not lines:
                 return None
             full = " ".join(l.rstrip("\n\r").strip() for l in lines)
+            self.entries_attempted += 1
             if prefix_compiler and log_format == LogFormat.STDERR:
-                return _parse_with_prefix(full, lnum, prefix_compiler)
-            return _dispatch_text_line(full, lnum, log_format)
+                entry = _parse_with_prefix(full, lnum, prefix_compiler)
+            else:
+                entry = _dispatch_text_line(full, lnum, log_format)
+            if entry is None:
+                self.parse_errors += 1
+            return entry
 
         with opener(path, "rt", encoding="utf-8", errors="replace") as fh:
             for raw_line in fh:
@@ -1367,7 +1376,11 @@ class LogParser:
             if not lines:
                 return None
             full = " ".join(l.rstrip("\n\r").strip() for l in lines)
-            return _dispatch_text_line(full, lnum, log_format)
+            self.entries_attempted += 1
+            entry = _dispatch_text_line(full, lnum, log_format)
+            if entry is None:
+                self.parse_errors += 1
+            return entry
 
         for raw_line in lines_iter:
             line_number += 1

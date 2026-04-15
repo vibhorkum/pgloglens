@@ -124,29 +124,57 @@ def _load_config(config_path: Optional[str]) -> dict:
     return {}
 
 
+def _build_rca_config(cfg: dict):
+    """Build an RCAConfig from the loaded YAML config dict.
+
+    Reads the optional ``rca_thresholds`` section and applies overrides on top
+    of the defaults.  Unknown keys are silently ignored so new config files
+    remain forward-compatible.
+    """
+    from .rca import RCAConfig
+    thresholds = cfg.get("rca_thresholds", {})
+    if not thresholds:
+        return RCAConfig()
+    known = {f.name for f in RCAConfig.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+    overrides = {k: v for k, v in thresholds.items() if k in known}
+    return RCAConfig(**overrides)
+
+
 def _parse_relative_time(s: str) -> Optional[datetime]:
-    """Parse relative time strings like -1h, -24h, -30m, -7d."""
+    """Parse relative time strings.
+
+    Accepts both signed (``-2h``) and bare (``2h``) relative offsets meaning
+    "that many units ago from now".  Supported units: ``h`` (hours), ``m``
+    (minutes), ``d`` (days).  Falls back to ISO-8601 / dateutil parsing for
+    absolute timestamps.
+
+    Examples::
+
+        "2h"    → 2 hours ago
+        "30m"   → 30 minutes ago
+        "7d"    → 7 days ago
+        "-24h"  → 24 hours ago  (legacy form, also supported)
+        "2026-01-01T00:00:00" → absolute datetime
+    """
     s = s.strip()
-    if s.startswith("-"):
-        try:
-            if s.endswith("h"):
-                hours = float(s[1:-1])
-                return datetime.now() - timedelta(hours=hours)
-            if s.endswith("m"):
-                mins = float(s[1:-1])
-                return datetime.now() - timedelta(minutes=mins)
-            if s.endswith("d"):
-                days = float(s[1:-1])
-                return datetime.now() - timedelta(days=days)
-        except ValueError:
-            pass
-    # Try ISO format
+    # Strip optional leading minus — both "-2h" and "2h" mean "N units ago"
+    raw = s.lstrip("-")
+    try:
+        if raw.endswith("h"):
+            return datetime.now() - timedelta(hours=float(raw[:-1]))
+        if raw.endswith("m"):
+            return datetime.now() - timedelta(minutes=float(raw[:-1]))
+        if raw.endswith("d"):
+            return datetime.now() - timedelta(days=float(raw[:-1]))
+    except ValueError:
+        pass
+    # Try ISO format via dateutil
     try:
         from dateutil import parser as dtparser
         return dtparser.parse(s)
     except Exception:
         pass
-    # Fallback: try datetime.fromisoformat
+    # Fallback: stdlib fromisoformat
     try:
         return datetime.fromisoformat(s)
     except Exception:
@@ -171,8 +199,9 @@ def _common_analyze_options(fn):
     """Decorator that adds common analysis options to a Click command."""
     decorators = [
         click.option("--format", "-f", "output_format",
-                     type=click.Choice(["terminal", "html", "json", "markdown"], case_sensitive=False),
-                     default="terminal", show_default=True, help="Output format"),
+                     type=click.Choice(["terminal", "html", "json", "markdown", "jsonl"], case_sensitive=False),
+                     default="terminal", show_default=True,
+                     help="Output format. Use 'jsonl' to stream raw log entries as JSON Lines."),
         click.option("--output", "-o", "output_file",
                      type=click.Path(), default=None, help="Output file path"),
         click.option("--slow-query-threshold", "slow_query_threshold", type=float,
@@ -348,11 +377,13 @@ def cmd_analyze(
       pgloglens analyze *.log --format html -o report.html
       pgloglens analyze pg.log --slow-query-threshold 500 --top-queries 50
       pgloglens analyze pg.log --llm-provider openai --llm-model gpt-4o
+      pgloglens analyze pg.log --from-time 24h --database myapp
       pgloglens analyze pg.log --from-time -24h --database myapp
       pgloglens analyze pg.log --application myservice --ai-slow-queries 5
       pgloglens analyze pg.log --ai-generate-config --ai-index-recommendations
       pgloglens analyze pg.log --stream-llm --llm-provider anthropic
       pgloglens analyze pg.log --platform rds --anonymize
+      pgloglens analyze pg.log --format jsonl | jq 'select(.duration_ms > 5000)'
     """
     # --list-prefixes: print all known patterns and exit
     if list_prefixes:
@@ -370,11 +401,26 @@ def cmd_analyze(
     if not log_files:
         raise click.UsageError("Missing argument 'LOG_FILES...'. Provide at least one log file, or use --list-prefixes.")
 
+    # JSONL mode: stream raw LogEntry objects, skip full analysis pipeline
+    if output_format == "jsonl":
+        _stream_jsonl(
+            log_files=list(log_files),
+            output_file=output_file,
+            from_time=_parse_relative_time(from_time) if from_time else None,
+            to_time=_parse_relative_time(to_time) if to_time else None,
+            database=database,
+            user=user,
+            slow_query_threshold=slow_query_threshold,
+            log_line_prefix=log_line_prefix,
+        )
+        return
+
     # Load config and apply defaults
     cfg = _load_config(config_file)
     slow_query_threshold = cfg.get("slow_query_threshold_ms", slow_query_threshold)
     top_queries = cfg.get("report", {}).get("top_queries", top_queries)
     top_errors = cfg.get("report", {}).get("top_errors", top_errors)
+    rca_config = _build_rca_config(cfg)
 
     if llm_provider == "none":
         cfg_provider = cfg.get("llm", {}).get("provider", "none")
@@ -471,7 +517,7 @@ def cmd_analyze(
     if not no_rca:
         if verbose:
             click.echo("[pgloglens] Running rule-based RCA...")
-        run_rca(result)
+        run_rca(result, config=rca_config)
 
         # Apply rule pack overrides and custom rules
         if rule_pack:
@@ -817,6 +863,25 @@ def _run_analysis(
 
     result = analyzer.process_entries(_stream_all_files())
     result.anonymized = anonymize
+
+    # Surface parse health — warn when a significant fraction of lines failed
+    result.parse_errors = parser.parse_errors
+    result.entries_attempted = parser.entries_attempted
+    if parser.entries_attempted > 0:
+        error_rate = parser.parse_errors / parser.entries_attempted
+        if error_rate >= 0.05:
+            click.echo(
+                f"[WARNING] Parse error rate: {error_rate * 100:.1f}% "
+                f"({parser.parse_errors:,} of {parser.entries_attempted:,} entries failed to parse). "
+                "Check --log-line-prefix or --platform if the format differs from default stderr.",
+                err=True,
+            )
+        elif verbose and parser.parse_errors > 0:
+            click.echo(
+                f"  Parse errors: {parser.parse_errors} of {parser.entries_attempted} entries "
+                f"({parser.parse_errors / parser.entries_attempted * 100:.1f}%)",
+            )
+
     return result
 
 
@@ -832,6 +897,79 @@ def _write_report(result: AnalysisResult, output_format: str, output_file: Optio
         click.echo(f"Report written to: {output_file}")
     elif content:
         click.echo(content)
+
+
+def _stream_jsonl(
+    log_files: List[str],
+    output_file: Optional[str],
+    from_time: Optional[datetime] = None,
+    to_time: Optional[datetime] = None,
+    database: Optional[str] = None,
+    user: Optional[str] = None,
+    slow_query_threshold: float = 1000.0,
+    log_line_prefix: Optional[str] = None,
+) -> None:
+    """Stream parsed LogEntry objects as JSON Lines (one object per line).
+
+    This bypasses the analysis pipeline entirely, making it suitable for
+    piping into ``jq``, custom scripts, or downstream tools.
+
+    Example::
+
+        pgloglens analyze pg.log --format jsonl | jq 'select(.duration_ms > 5000)'
+        pgloglens analyze pg.log --format jsonl -o entries.jsonl
+    """
+    from .parser import LogParser
+
+    parser = LogParser(
+        slow_query_threshold_ms=slow_query_threshold,
+        from_time=from_time,
+        to_time=to_time,
+        filter_database=database,
+        filter_user=user,
+        log_line_prefix=log_line_prefix,
+    )
+
+    def _serialize(entry) -> str:
+        obj: dict = {}
+        if entry.timestamp:
+            obj["timestamp"] = entry.timestamp.isoformat()
+        if entry.log_level:
+            obj["log_level"] = entry.log_level.value
+        if entry.pid is not None:
+            obj["pid"] = entry.pid
+        if entry.user:
+            obj["user"] = entry.user
+        if entry.database:
+            obj["database"] = entry.database
+        if entry.application_name:
+            obj["application_name"] = entry.application_name
+        if entry.remote_host:
+            obj["remote_host"] = entry.remote_host
+        if entry.duration_ms is not None:
+            obj["duration_ms"] = entry.duration_ms
+        if entry.query:
+            obj["query"] = entry.query
+        if entry.message:
+            obj["message"] = entry.message
+        if entry.error_code:
+            obj["error_code"] = entry.error_code
+        if entry.query_type:
+            obj["query_type"] = entry.query_type
+        if entry.phase:
+            obj["phase"] = entry.phase
+        obj["line_number"] = entry.line_number
+        return json.dumps(obj, ensure_ascii=False)
+
+    dest = open(output_file, "w", encoding="utf-8") if output_file else sys.stdout
+    try:
+        for path in log_files:
+            for entry in parser.parse_file(path, show_progress=False):
+                dest.write(_serialize(entry) + "\n")
+    finally:
+        if output_file:
+            dest.close()
+            click.echo(f"Entries written to: {output_file}", err=True)
 
 
 def _dump_queries_to_file(
@@ -1147,7 +1285,7 @@ def cmd_watch(
               default="text", show_default=True, help="Output format")
 @click.option("--min-count", type=int, default=1, show_default=True,
               help="Minimum occurrence count to include")
-@click.option("--min-duration-ms", type=float, default=0.0, show_default=True,
+@click.option("--min-duration-ms", type=float, default=100.0, show_default=True,
               help="Minimum avg duration to include (ms)")
 @click.option("--slow-query-threshold", "slow_query_threshold", type=float,
               default=100.0, show_default=True, help="Min duration (ms) for slow query tracking")
@@ -1417,6 +1555,30 @@ watch:
 incremental:
   enabled: false
   state_file: ~/.pgloglens_state.json
+
+# RCA rule thresholds — uncomment and adjust for your environment.
+# All values use the same units as the default (ms, MB, counts).
+# rca_thresholds:
+#   connection_warn: 80          # warn at N peak connections
+#   connection_critical: 150     # critical at N peak connections
+#   checkpoint_freq_warn: 3      # warn after N checkpoint-too-frequent messages
+#   checkpoint_slow_ms: 60000    # warn when avg checkpoint > N ms (60s)
+#   lock_warn: 10                # warn at N lock wait events
+#   lock_critical: 50            # critical at N lock wait events
+#   deadlock_warn: 2             # warn after N deadlock events
+#   temp_file_mb: 100            # flag temp files >= N MB
+#   temp_file_high_mb: 1024      # HIGH severity temp files >= N MB
+#   auth_fail_warn: 5            # warn after N auth failures
+#   auth_fail_critical: 50       # critical after N auth failures
+#   autovac_freq_warn: 10        # warn when table vacuumed >= N times
+#   autovac_freq_high: 20        # HIGH when table vacuumed >= N times
+#   repl_lag_critical_mb: 100    # critical when lag >= N MB
+#   long_tx_warn_ms: 300000      # warn on transactions longer than N ms (5 min)
+#   long_tx_critical_ms: 3600000 # critical on transactions longer than N ms (1 hr)
+#   idle_ratio_warn: 0.70        # warn when idle time > N fraction of session
+#   dml_ratio_warn: 0.40         # warn when DELETE+UPDATE > N fraction of queries
+#   parse_ratio_warn: 0.20       # warn when parse time > N fraction of execute time
+#   error_storm_threshold: 50    # warn when > N errors per 5-minute window
 """
     config_path.write_text(default_config)
     click.echo(f"Config written to: {config_path}")
@@ -1779,26 +1941,31 @@ def cmd_save(
 @click.argument("log_files", nargs=-1, required=True, type=str)
 @click.option("--slow-query-threshold", type=float, default=1000.0,
               help="Slow query threshold (ms)")
-@click.option("--exit-code", is_flag=True, default=False,
-              help="Exit with non-zero code if issues found")
+@click.option("--no-exit-code", "skip_exit_code", is_flag=True, default=False,
+              help="Always exit 0 regardless of findings (disables CI/CD exit codes)")
 def cmd_summary(
     log_files: Tuple[str, ...],
     slow_query_threshold: float,
-    exit_code: bool,
+    skip_exit_code: bool,
 ):
     """Quick summary of log health (5-line output).
 
-    Ideal for CI/CD, cron jobs, and quick health checks.
+    Ideal for CI/CD, cron jobs, and quick health checks.  Exit codes are
+    returned **by default** (no flag needed):
 
-    Exit codes (when --exit-code is set):
-      0: No critical or high severity issues
-      1: Critical issues found
-      2: High severity issues found
+    \b
+      0  No critical or high severity issues found
+      1  Critical severity issues found
+      2  High severity issues found (no critical)
+
+    Use --no-exit-code to suppress this for scripts that only need the text
+    output and want to handle all cases as success.
 
     \b
     Examples:
       pgloglens summary postgresql.log
-      pgloglens summary logs/*.log --exit-code
+      pgloglens summary logs/*.log
+      if pgloglens summary pg.log; then deploy; fi
     """
     # Discover files
     all_files = []
@@ -1842,13 +2009,12 @@ def cmd_summary(
     else:
         click.echo("Top issue: None")
 
-    # Exit code
-    if exit_code:
+    # Exit codes are on by default; suppress with --no-exit-code
+    if not skip_exit_code:
         if critical_count > 0:
             sys.exit(1)
         elif high_count > 0:
             sys.exit(2)
-        sys.exit(0)
 
 
 # ---------------------------------------------------------------------------

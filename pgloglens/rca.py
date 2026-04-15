@@ -13,6 +13,7 @@ v2 additions:
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Callable, Dict, List, Optional
 
@@ -23,6 +24,72 @@ from .analyzer import (
     detect_query_regression,
 )
 from .models import AnalysisResult, AutoExplainPlan, RCAFinding, Severity, SlowQuery
+
+
+# ---------------------------------------------------------------------------
+# Configurable thresholds
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RCAConfig:
+    """Configurable thresholds for all RCA rules.
+
+    Override defaults via ~/.pgloglens.yaml under the ``rca_thresholds`` key,
+    or pass an instance directly to ``run_rca()``.  All fields are optional —
+    omitted keys fall back to the class defaults.
+
+    Example yaml section::
+
+        rca_thresholds:
+          connection_warn: 50        # warn at 50 connections (not 80)
+          connection_critical: 100   # critical at 100 (not 150)
+          temp_file_mb: 50           # flag temp files >= 50 MB
+    """
+    # Connections
+    connection_warn: int = 80
+    connection_critical: int = 150
+    # Checkpoint
+    checkpoint_freq_warn: int = 3
+    checkpoint_slow_ms: float = 60_000.0
+    # Locks
+    lock_warn: int = 10
+    lock_critical: int = 50
+    # Deadlocks
+    deadlock_warn: int = 2
+    # Temp files
+    temp_file_mb: float = 100.0
+    temp_file_high_mb: float = 1_024.0
+    # Auth failures
+    auth_fail_warn: int = 5
+    auth_fail_critical: int = 50
+    # Autovacuum
+    autovac_freq_warn: int = 10
+    autovac_freq_high: int = 20
+    # Replication lag
+    repl_lag_critical_mb: float = 100.0
+    # Long-running transactions
+    long_tx_warn_ms: float = 300_000.0    # 5 minutes
+    long_tx_critical_ms: float = 3_600_000.0  # 1 hour
+    # Session idle time
+    idle_ratio_warn: float = 0.70
+    # Query type imbalance
+    dml_ratio_warn: float = 0.40
+    dml_lock_events_warn: int = 5
+    # Parse/plan phase overhead
+    parse_ratio_warn: float = 0.20
+    # Error storm (errors per 5-minute window)
+    error_storm_threshold: int = 50
+    # Query cancellation storm
+    cancelled_query_storm: int = 20
+
+
+# Module-level context set by run_rca() before executing rules
+_rca_config: RCAConfig = RCAConfig()
+
+
+def get_rca_config() -> RCAConfig:
+    """Return the currently active RCA configuration."""
+    return _rca_config
 
 
 # ---------------------------------------------------------------------------
@@ -47,9 +114,10 @@ def rule(fn: RuleFunc) -> RuleFunc:
 @rule
 def rule_high_checkpoint_frequency(result: AnalysisResult) -> List[RCAFinding]:
     findings = []
+    cfg = get_rca_config()
     cp = result.checkpoint_stats
 
-    if cp.warning_count >= 3:
+    if cp.warning_count >= cfg.checkpoint_freq_warn:
         findings.append(
             RCAFinding(
                 rule_id="HIGH_CHECKPOINT_FREQUENCY",
@@ -74,7 +142,7 @@ def rule_high_checkpoint_frequency(result: AnalysisResult) -> List[RCAFinding]:
             )
         )
 
-    if cp.count > 0 and cp.avg_duration_ms > 60000:
+    if cp.count > 0 and cp.avg_duration_ms > cfg.checkpoint_slow_ms:
         findings.append(
             RCAFinding(
                 rule_id="SLOW_CHECKPOINTS",
@@ -105,10 +173,11 @@ def rule_high_checkpoint_frequency(result: AnalysisResult) -> List[RCAFinding]:
 @rule
 def rule_connection_exhaustion(result: AnalysisResult) -> List[RCAFinding]:
     findings = []
+    cfg = get_rca_config()
     cs = result.connection_stats
 
-    if cs.peak_concurrent >= 80:
-        severity = Severity.CRITICAL if cs.peak_concurrent >= 150 else Severity.HIGH
+    if cs.peak_concurrent >= cfg.connection_warn:
+        severity = Severity.CRITICAL if cs.peak_concurrent >= cfg.connection_critical else Severity.HIGH
         findings.append(
             RCAFinding(
                 rule_id="CONNECTION_EXHAUSTION",
@@ -140,10 +209,11 @@ def rule_connection_exhaustion(result: AnalysisResult) -> List[RCAFinding]:
 @rule
 def rule_lock_storms(result: AnalysisResult) -> List[RCAFinding]:
     findings = []
+    cfg = get_rca_config()
     lock_events = [e for e in result.lock_events if not e.is_deadlock]
 
-    if len(lock_events) >= 10:
-        severity = Severity.CRITICAL if len(lock_events) >= 50 else Severity.HIGH
+    if len(lock_events) >= cfg.lock_warn:
+        severity = Severity.CRITICAL if len(lock_events) >= cfg.lock_critical else Severity.HIGH
 
         durations = [e.wait_duration_ms for e in lock_events if e.wait_duration_ms]
         avg_wait = sum(durations) / len(durations) if durations else 0
@@ -182,9 +252,10 @@ def rule_lock_storms(result: AnalysisResult) -> List[RCAFinding]:
 @rule
 def rule_deadlock_pattern(result: AnalysisResult) -> List[RCAFinding]:
     findings = []
+    cfg = get_rca_config()
     deadlocks = [e for e in result.lock_events if e.is_deadlock]
 
-    if len(deadlocks) >= 2:
+    if len(deadlocks) >= cfg.deadlock_warn:
         findings.append(
             RCAFinding(
                 rule_id="DEADLOCK_PATTERN",
@@ -213,12 +284,13 @@ def rule_deadlock_pattern(result: AnalysisResult) -> List[RCAFinding]:
 @rule
 def rule_temp_file_abuse(result: AnalysisResult) -> List[RCAFinding]:
     findings = []
-    large_temps = [t for t in result.temp_files if t.size_mb >= 100]
+    cfg = get_rca_config()
+    large_temps = [t for t in result.temp_files if t.size_mb >= cfg.temp_file_mb]
 
     if large_temps:
         total_mb = sum(t.size_mb for t in large_temps)
         max_mb = max(t.size_mb for t in large_temps)
-        severity = Severity.HIGH if max_mb >= 1024 else Severity.MEDIUM
+        severity = Severity.HIGH if max_mb >= cfg.temp_file_high_mb else Severity.MEDIUM
 
         findings.append(
             RCAFinding(
@@ -255,15 +327,16 @@ def rule_temp_file_abuse(result: AnalysisResult) -> List[RCAFinding]:
 @rule
 def rule_autovacuum_lagging(result: AnalysisResult) -> List[RCAFinding]:
     findings = []
+    cfg = get_rca_config()
     if not result.autovacuum_stats:
         return findings
 
     freq_data = analyze_autovacuum_frequency(result.autovacuum_stats)
-    high_freq = [(t, c, avg) for t, c, avg in freq_data if c >= 10]
+    high_freq = [(t, c, avg) for t, c, avg in freq_data if c >= cfg.autovac_freq_warn]
 
     if high_freq:
         top_table, top_count, top_avg = high_freq[0]
-        severity = Severity.HIGH if top_count >= 20 else Severity.MEDIUM
+        severity = Severity.HIGH if top_count >= cfg.autovac_freq_high else Severity.MEDIUM
 
         findings.append(
             RCAFinding(
@@ -299,10 +372,11 @@ def rule_autovacuum_lagging(result: AnalysisResult) -> List[RCAFinding]:
 @rule
 def rule_auth_failures_spike(result: AnalysisResult) -> List[RCAFinding]:
     findings = []
+    cfg = get_rca_config()
     failures = result.connection_stats.auth_failures
 
-    if failures >= 5:
-        severity = Severity.CRITICAL if failures >= 50 else Severity.HIGH
+    if failures >= cfg.auth_fail_warn:
+        severity = Severity.CRITICAL if failures >= cfg.auth_fail_critical else Severity.HIGH
         findings.append(
             RCAFinding(
                 rule_id="AUTH_FAILURES_SPIKE",
@@ -336,9 +410,10 @@ def rule_replication_lag(result: AnalysisResult) -> List[RCAFinding]:
 
     lag_bytes = [e.lag_bytes for e in result.replication_lag_events if e.lag_bytes]
     if lag_bytes:
+        cfg = get_rca_config()
         max_lag_bytes = max(lag_bytes)
         max_lag_mb = max_lag_bytes / (1024 * 1024)
-        severity = Severity.CRITICAL if max_lag_mb >= 100 else Severity.HIGH
+        severity = Severity.CRITICAL if max_lag_mb >= cfg.repl_lag_critical_mb else Severity.HIGH
 
         findings.append(
             RCAFinding(
@@ -444,7 +519,8 @@ def rule_slow_query_regression(result: AnalysisResult) -> List[RCAFinding]:
 @rule
 def rule_error_storm(result: AnalysisResult) -> List[RCAFinding]:
     findings = []
-    storms = detect_error_storms(result.error_patterns, window_minutes=5, threshold=50)
+    cfg = get_rca_config()
+    storms = detect_error_storms(result.error_patterns, window_minutes=5, threshold=cfg.error_storm_threshold)
 
     if storms:
         worst_pattern, worst_rate = max(storms, key=lambda x: x[1])
@@ -546,11 +622,12 @@ def rule_disk_full(result: AnalysisResult) -> List[RCAFinding]:
 @rule
 def rule_long_running_transactions(result: AnalysisResult) -> List[RCAFinding]:
     findings = []
-    very_slow = [sq for sq in result.slow_queries if sq.max_duration_ms >= 300_000]
+    cfg = get_rca_config()
+    very_slow = [sq for sq in result.slow_queries if sq.max_duration_ms >= cfg.long_tx_warn_ms]
 
     if very_slow:
         worst = max(very_slow, key=lambda q: q.max_duration_ms)
-        severity = Severity.CRITICAL if worst.max_duration_ms >= 3_600_000 else Severity.HIGH
+        severity = Severity.CRITICAL if worst.max_duration_ms >= cfg.long_tx_critical_ms else Severity.HIGH
 
         findings.append(
             RCAFinding(
@@ -591,6 +668,7 @@ def rule_long_running_transactions(result: AnalysisResult) -> List[RCAFinding]:
 def rule_high_session_idle_time(result: AnalysisResult) -> List[RCAFinding]:
     """Rule 15: High session idle time — connection pool not used efficiently."""
     findings = []
+    cfg = get_rca_config()
     ss = result.session_stats
 
     if ss.total_session_duration_ms <= 0:
@@ -598,7 +676,7 @@ def rule_high_session_idle_time(result: AnalysisResult) -> List[RCAFinding]:
 
     idle_ratio = ss.total_idle_time_ms / ss.total_session_duration_ms if ss.total_session_duration_ms > 0 else 0.0
 
-    if idle_ratio > 0.70:
+    if idle_ratio > cfg.idle_ratio_warn:
         pct = idle_ratio * 100
         findings.append(
             RCAFinding(
@@ -633,6 +711,7 @@ def rule_high_session_idle_time(result: AnalysisResult) -> List[RCAFinding]:
 def rule_query_type_imbalance(result: AnalysisResult) -> List[RCAFinding]:
     """Rule 16: Heavy DML (DELETE/UPDATE > 40%) combined with high lock events."""
     findings = []
+    cfg = get_rca_config()
     qt = result.query_type_stats
     lock_events = [e for e in result.lock_events if not e.is_deadlock]
 
@@ -646,7 +725,7 @@ def rule_query_type_imbalance(result: AnalysisResult) -> List[RCAFinding]:
     dml_count = qt.delete_count + qt.update_count
     dml_ratio = dml_count / total_queries
 
-    if dml_ratio > 0.40 and len(lock_events) >= 5:
+    if dml_ratio > cfg.dml_ratio_warn and len(lock_events) >= cfg.dml_lock_events_warn:
         pct = dml_ratio * 100
         findings.append(
             RCAFinding(
@@ -683,6 +762,7 @@ def rule_query_type_imbalance(result: AnalysisResult) -> List[RCAFinding]:
 def rule_prepare_phase_bottleneck(result: AnalysisResult) -> List[RCAFinding]:
     """Rule 17: Excessive time in parse/plan phase."""
     findings = []
+    cfg = get_rca_config()
     pb = result.prepare_bind_execute
 
     if pb.total_execute_ms <= 0:
@@ -690,7 +770,7 @@ def rule_prepare_phase_bottleneck(result: AnalysisResult) -> List[RCAFinding]:
 
     parse_ratio = pb.total_parse_ms / pb.total_execute_ms if pb.total_execute_ms > 0 else 0.0
 
-    if parse_ratio > 0.20:
+    if parse_ratio > cfg.parse_ratio_warn:
         pct = parse_ratio * 100
         findings.append(
             RCAFinding(
@@ -900,7 +980,8 @@ def rule_cancelled_query_storm(result: AnalysisResult) -> List[RCAFinding]:
     findings = []
     cancelled = result.cancelled_queries
 
-    if len(cancelled) > 20:
+    cfg = get_rca_config()
+    if len(cancelled) > cfg.cancelled_query_storm:
         # Check for short window (all within 5 minutes)
         timestamps = []
         for c in cancelled:
@@ -1177,8 +1258,17 @@ def _parse_index_recommendations(text: str, queries: List[SlowQuery]) -> List[Di
 # Public API
 # ---------------------------------------------------------------------------
 
-def run_rca(result: AnalysisResult) -> List[RCAFinding]:
-    """Run all registered RCA rules and return sorted findings."""
+def run_rca(result: AnalysisResult, config: Optional[RCAConfig] = None) -> List[RCAFinding]:
+    """Run all registered RCA rules and return sorted findings.
+
+    Args:
+        result: The analysis result to inspect.
+        config: Optional threshold overrides. Defaults to ``RCAConfig()`` (built-in values).
+                Load from ``~/.pgloglens.yaml`` under ``rca_thresholds`` and pass here.
+    """
+    global _rca_config
+    _rca_config = config if config is not None else RCAConfig()
+
     all_findings: List[RCAFinding] = []
     for rule_fn in _REGISTERED_RULES:
         try:

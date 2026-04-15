@@ -493,6 +493,10 @@ class AnalysisResult(BaseModel):
     # pg_stat_statements correlation
     pgss_correlation: Optional[Any] = None  # CorrelationResult from pgss module
 
+    # Parse health metrics — set after parsing, used for data-quality warnings
+    parse_errors: int = 0
+    entries_attempted: int = 0
+
     model_config = {"arbitrary_types_allowed": True}
 
     def model_post_init(self, __context: Any) -> None:

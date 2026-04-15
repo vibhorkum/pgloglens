@@ -192,7 +192,7 @@ def render_terminal(result: AnalysisResult) -> None:
             show_header=True,
             header_style="bold cyan",
         )
-        for i, sq in enumerate(result.slow_queries[:20], 1):
+        for i, sq in enumerate(result.slow_queries, 1):
             reg_indicator = "[bold red]📈[/bold red]" if getattr(sq, "is_regression", False) else ""
             qtype = getattr(sq, "query_type", "unknown")
             sq_table.add_row(
@@ -336,10 +336,10 @@ def _render_plain_terminal(result: AnalysisResult) -> None:
     print(f"Entries: {result.total_entries}")
     print(f"Slow queries: {len(result.slow_queries)}")
     print(f"Errors: {len(result.error_patterns)}")
-    for sq in result.slow_queries[:10]:
+    for sq in result.slow_queries:
         reg = " [REGRESSION]" if getattr(sq, "is_regression", False) else ""
         print(f"  [{sq.count}x avg={sq.avg_duration_ms:.0f}ms{reg}] {sq.normalized_query[:80]}")
-    for ep in result.error_patterns[:10]:
+    for ep in result.error_patterns:
         print(f"  [{ep.count}x {ep.error_code}] {ep.message_pattern[:80]}")
 
 
@@ -438,7 +438,7 @@ def render_markdown(result: AnalysisResult) -> str:
             "| # | Type | Reg | Count | Avg (ms) | Max (ms) | P95 (ms) | P99 (ms) | Query |\n"
             "|---|------|-----|-------|----------|----------|----------|----------|-------|\n"
         )
-        for i, sq in enumerate(result.slow_queries[:20], 1):
+        for i, sq in enumerate(result.slow_queries, 1):
             reg = "📈" if getattr(sq, "is_regression", False) else ""
             q = sq.normalized_query[:60].replace("|", "\\|")
             qtype = getattr(sq, "query_type", "?")[:6].upper()
@@ -449,7 +449,7 @@ def render_markdown(result: AnalysisResult) -> str:
         lines.append("\n")
 
         lines.append("### Query Details\n")
-        for i, sq in enumerate(result.slow_queries[:10], 1):
+        for i, sq in enumerate(result.slow_queries, 1):
             reg_note = " ⚠ REGRESSION" if getattr(sq, "is_regression", False) else ""
             lines.append(f"**Query {i}** (count={sq.count}, avg={sq.avg_duration_ms:.0f}ms{reg_note})\n")
             lines.append(f"```sql\n{sq.normalized_query}\n```\n\n")
